@@ -23,7 +23,7 @@ explanation.
 7. [Datasets](#datasets)
 8. [Re-training the models](#re-training-the-models)
 9. [How the machine learning works](#how-the-machine-learning-works)
-10. [Deploying on Streamlit Cloud](#deploying-on-streamlit-cloud)
+10. [Deploying on Render + Neon](#deploying-on-render--neon)
 11. [Common errors](#common-errors)
 
 ---
@@ -32,7 +32,8 @@ explanation.
 
 | Area | What it does |
 |---|---|
-| **Sign-in** | Patient or Doctor/Admin demo accounts, public About / Contact / Help pages |
+| **Sign-in** | Patient, Doctor and Admin accounts; you stay signed in after a reload; sign-in limits; public About / Contact / Help pages |
+| **Admin** | Accounts & Security page: add doctors with one-time set-up links, deactivate/reactivate (signs out at once), reset links, audit log. No health data |
 | **Overview** | Welcome hero with quick-start, KPI cards, session risk distribution, dataset and model-quality charts |
 | **Screenings** | Guided form per condition, six selectable model families (recommended first), gauge, next steps, risk-factor chips, urgent-care notice, AHEAD Insight (Gemini), model interpretation. Diabetes estimates whether HbA1c is likely to be in the prediabetes range or higher; kidney asks short lifestyle and health questions with kidney tests optional; cardiovascular compares answers with survey respondents who reported a heart attack (not a 10-year risk). Every result is sorted into *See a doctor soon*, *At risk* or *Not flagged* (`ahead/triage.py`) |
 | **Data & Analytics** | Dataset explorer, final test metrics, threshold sweep, algorithm comparison table |
@@ -68,12 +69,13 @@ stored), page requests such as "open medication" and the patient's own status qu
 the app, and answers can be read aloud by the browser. The voice and photo flows have explicit fallback paths
 and make no diagnostic or prescribing decisions.
 
-Database migration is automatic and additive on app startup: the existing `screenings` table gains input
-history columns and `ahead/platform_data.py` creates linked-care, wellness, food, medication, dose, notification,
-activity, and prediction-version tables. Make a backup of `AHEAD_DB_PATH` before upgrading an existing
-database. No manual migration command is required. `GEMINI_API_KEY` (or `GOOGLE_API_KEY`) enables optional
-food photo analysis and the existing AI assistant/insights. The database still defaults to local SQLite;
-Streamlit Community Cloud does not provide durable application-file storage. Do not upload real patient data.
+Database changes are versioned SQL files in `ahead/migrations/` (`001_initial.sql`, `002_…`). They run
+automatically when the app starts, each one once, and are recorded in the `schema_migrations` table. With
+`DATABASE_URL` set the app uses PostgreSQL (the live site uses Neon); without it, a local SQLite file
+(`AHEAD_DB_PATH`, default `ahead.sqlite3`). Make a Neon backup branch before deploying a new migration.
+`GEMINI_API_KEY` (or `GOOGLE_API_KEY`) enables optional food photo analysis and the AI assistant/insights.
+Do not enter real patient data: AHEAD is tested with test users only, and real patient data would need
+UAE hosting and ethics approval first (UAE Federal Law No. 2 of 2019).
 In-app reminders are calculated when pages are visited; there are no background jobs, push, SMS, or email.
 Times in medication scheduling use `Asia/Dubai`; historical timestamps are stored in UTC.
 
@@ -127,19 +129,29 @@ source .venv/bin/activate        # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
-Python 3.11 is recommended.
+Python 3.12 or 3.13 is recommended.
 
-Set `AHEAD_DB_PATH` to a protected durable volume to retain accounts and doctor review records across app restarts. By default the SQLite database is `ahead.sqlite3` in the project folder. Streamlit Cloud's local files may be lost on restart; use a persistent volume or a database service before relying on saved records. Keep the database private and use fictional or de-identified patient data for demonstrations.
+Without `DATABASE_URL` the app keeps its data in a local SQLite file (`ahead.sqlite3`, or `AHEAD_DB_PATH`).
+That is for development only; the live site uses PostgreSQL on Neon (see [Deploying](#deploying-on-render--neon)).
 
 ---
 
 ## Running the app
 
 ```bash
-streamlit run app.py
+streamlit run server.py
 ```
 
-Open the printed URL (usually `http://localhost:8501`). Create a patient account on the sign-in page. To provision the first doctor account, set `AHEAD_DOCTOR_EMAIL` and a strong `AHEAD_DOCTOR_PASSWORD` (12+ characters) before the first run.
+Open the printed URL (usually `http://localhost:8501`). `server.py` is the Streamlit app plus three small HTTP
+routes (`/healthz`, `/auth/session`, `/auth/logout`) that keep you signed in across reloads with an HttpOnly
+cookie. (`streamlit run app.py` also works for quick UI work, but then a reload signs you out.)
+
+Create a patient account on the sign-in page. For the first admin, run
+`python scripts/create_account.py --email you@example.com --name "Your Name" --role Admin`; it asks for the
+password (shown as `*`). The admin then adds doctors from **Accounts & Security**.
+
+**Tests:** `python -m pytest -q` runs everything on throw-away SQLite files. To run the same tests on PostgreSQL,
+set `AHEAD_TEST_DATABASE_URL` to a *local* database (the tests refuse any other host, so they can never touch Neon).
 
 ---
 
@@ -148,9 +160,11 @@ Open the printed URL (usually `http://localhost:8501`). Create a patient account
 | Role | Email | Password |
 |---|---|---|
 | Patient | `user@ahead.demo` | `user123` |
-| Doctor / Admin | `doctor@ahead.demo` | `doctor123` |
+| Doctor | `doctor@ahead.demo` | `doctor123` |
+| Admin | `admin@ahead.demo` | `admin123` |
 
-Demo accounts are disabled by default. Set `AHEAD_ENABLE_DEMO_ACCOUNTS=1` **only** for a classroom demo; never upload identifiable patient records when demo credentials are enabled. Accounts use salted password hashes and are stored in the local SQLite database. Doctor accounts see the Clinical Dashboard and records are scoped to their own account. This is a research prototype, not a production authentication or health-record system.
+For a **local** classroom run only: set `AHEAD_ENABLE_DEMO_ACCOUNTS=1` (`run_windows.bat` does). They are never
+created on PostgreSQL, so they can't exist on the live site. Passwords are stored as salted PBKDF2 hashes.
 
 Clinical uploads use the form's columns. Age and the optional columns (lab values, readings and the heart history questions) may be left out. An optional `DOB`, `DateOfBirth`, `date_of_birth`, or `Date of Birth` column (YYYY-MM-DD) fills age or the heart model's age category. Missing and invalid values appear per row and are not scored until corrected. Correct a row and save it in the review queue, then score eligible records. Clinicians can mark a record reviewed or excluded and add a note. The file is limited to 5,000 rows and 15 MB. The PDF and CSV contain entered data; handle downloads appropriately.
 
@@ -274,13 +288,20 @@ lists none.
 
 ---
 
-## Deploying on Streamlit Cloud
+## Deploying on Render + Neon
 
-1. Push the repository to GitHub — `app.py`, the whole `ahead/` package, `assets/`, `static/`,
-   `models/` and `data/` must all be committed (note: `data/heart.csv` is 82 MB, above GitHub's
-   50 MB warning threshold; consider Git LFS).
-2. On [share.streamlit.io](https://share.streamlit.io) create a new app pointing at `app.py`.
-3. Add `GEMINI_API_KEY` under *Advanced settings → Secrets* if you want the AI features.
+The live site runs on **Render** (web service, free plan, Frankfurt) with **Neon** PostgreSQL (Frankfurt).
+`render.yaml` describes the service; Render wakes it on the first visit after 15 idle minutes (about a minute).
+
+1. **Neon:** create a project `ahead` (region Frankfurt). Copy the connection string (Dashboard → Connect).
+2. **Render:** New → Blueprint → pick this repository and branch. When asked, paste the Neon string into
+   `DATABASE_URL`, and add `GEMINI_API_KEY` if you use the AI features. Secrets live only in Render.
+3. After the first deploy, set `AHEAD_PUBLIC_URL` to the site address (used in set-up and reset links).
+4. **First admin** (from your computer, once): set `DATABASE_URL` in your terminal to the Neon string, then run
+   `python scripts/create_account.py --email … --name … --role Admin`. Sign in with **Doctor / Admin** selected.
+5. Migrations run on every start. Before a deploy that adds a migration, create a Neon backup branch.
+
+Health check: `GET /healthz` returns `{"status": "ok", "database": "ok"}`.
 
 ---
 
@@ -293,5 +314,5 @@ lists none.
 | A selected model says "has not been saved yet" | Run `python train_model.py` to generate `models/all_models/` |
 | AI Assistant / Insight unavailable | Provide `GEMINI_API_KEY` (see above) |
 | Background images missing | `server.enableStaticServing = true` must stay in `.streamlit/config.toml` and the PNGs in `static/` |
-| Signed out after refreshing the page | Expected: the prototype keeps the session in memory only (no cookies) |
+| Signed out after refreshing the page | Start with `streamlit run server.py` (not `app.py`). Sessions also end after 2 hours idle or 12 hours in total |
 | Blank page after editing | Hard-refresh the browser (`Ctrl/Cmd + Shift + R`) |

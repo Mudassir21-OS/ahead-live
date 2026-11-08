@@ -6,30 +6,19 @@ import json
 import logging
 import os
 import secrets
-import sqlite3
-from contextlib import contextmanager
 from datetime import datetime, timezone
-from pathlib import Path
 
-from ahead.config import BASE, ROLE_DOCTOR, ROLE_PATIENT
+from ahead import db as database
+from ahead.config import ROLE_ADMIN, ROLE_DOCTOR, ROLE_PATIENT
+
+connection = database.connection
+log = logging.getLogger(__name__)
+ROLES = (ROLE_PATIENT, ROLE_DOCTOR, ROLE_ADMIN)
+MIN_PASSWORD = 12
 
 
 def _db_path():
-    return Path(os.environ.get("AHEAD_DB_PATH", str(BASE / "ahead.sqlite3")))
-
-
-@contextmanager
-def connection():
-    path = _db_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    db = sqlite3.connect(path, timeout=15)
-    db.row_factory = sqlite3.Row
-    try:
-        db.execute("PRAGMA foreign_keys=ON")
-        yield db
-        db.commit()
-    finally:
-        db.close()
+    return database.sqlite_path()
 
 
 def password_hash(password):
@@ -47,64 +36,72 @@ def verify_password(password, encoded):
         return False
 
 
-def init_db():
+# Spent on unknown emails too, so a failed sign-in takes as long whether or not the account exists.
+_DUMMY_HASH = password_hash(secrets.token_hex(16))
+
+
+def _columns(db, table):
+    return {row["name"] for row in db.execute(f"PRAGMA table_info({table})")}
+
+
+def _legacy_sqlite_upgrade(db, run_001):
+    """Bring a local SQLite file from before versioned migrations up to the 001 schema."""
+    run_001()  # creates any table that is missing
+    for table, column, definition in (
+            ("users", "preferences_json", "TEXT NOT NULL DEFAULT '{}'"),
+            ("screenings", "values_json", "TEXT NOT NULL DEFAULT '{}'"),
+            ("screenings", "source", "TEXT NOT NULL DEFAULT 'legacy'"),
+            ("screenings", "previous_id", "INTEGER"),
+            ("records", "source_name", "TEXT"),
+            ("care_access", "ai_allowed", "INTEGER NOT NULL DEFAULT 0")):
+        if column not in _columns(db, table):
+            db.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+
+
+_bootstrapped = set()
+
+
+def _sqlite_repairs():
+    """One-time repairs of local SQLite records saved by earlier versions; user_version marks them done,
+    so this is a single cheap check on later start-ups. (The PostgreSQL database never held such records.)"""
     with connection() as db:
-        db.executescript("""
-            CREATE TABLE IF NOT EXISTS users (
-                id INTEGER PRIMARY KEY, email TEXT UNIQUE NOT NULL, password_hash TEXT NOT NULL,
-                role TEXT NOT NULL, name TEXT NOT NULL, institution TEXT NOT NULL DEFAULT '',
-                preferences_json TEXT NOT NULL DEFAULT '{}'
-            );
-            CREATE TABLE IF NOT EXISTS records (
-                id INTEGER PRIMARY KEY, owner_id INTEGER NOT NULL REFERENCES users(id),
-                cohort TEXT NOT NULL, disease TEXT NOT NULL, patient_id TEXT NOT NULL,
-                source_row INTEGER NOT NULL, values_json TEXT NOT NULL, dob TEXT,
-                issues_json TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'Incomplete',
-                note TEXT NOT NULL DEFAULT '', model TEXT, score REAL, threshold REAL,
-                created_at TEXT NOT NULL, updated_at TEXT NOT NULL
-            );
-            CREATE INDEX IF NOT EXISTS records_owner ON records(owner_id, disease, cohort);
-            CREATE TABLE IF NOT EXISTS screenings (
-                id INTEGER PRIMARY KEY, owner_id INTEGER NOT NULL REFERENCES users(id),
-                disease TEXT NOT NULL, model TEXT NOT NULL, score REAL NOT NULL,
-                prediction INTEGER NOT NULL, threshold REAL NOT NULL, created_at TEXT NOT NULL
-            );
-            CREATE INDEX IF NOT EXISTS screenings_owner ON screenings(owner_id, created_at);
-        """)
-        if "preferences_json" not in {row["name"] for row in db.execute("PRAGMA table_info(users)")}:
-            db.execute("ALTER TABLE users ADD COLUMN preferences_json TEXT NOT NULL DEFAULT '{}'")
-        screening_columns = {row["name"] for row in db.execute("PRAGMA table_info(screenings)")}
-        for column, definition in (("values_json", "TEXT NOT NULL DEFAULT '{}'"),
-                                   ("source", "TEXT NOT NULL DEFAULT 'legacy'"),
-                                   ("previous_id", "INTEGER")):
-            if column not in screening_columns:
-                db.execute(f"ALTER TABLE screenings ADD COLUMN {column} {definition}")
-        # The uploaded file's name labels its cohort; cohorts saved before this column show their upload date instead.
-        if "source_name" not in {row["name"] for row in db.execute("PRAGMA table_info(records)")}:
-            db.execute("ALTER TABLE records ADD COLUMN source_name TEXT")
-        # One-time repairs of records saved by earlier versions; user_version marks them done so a rerun skips the scans.
-        if db.execute("PRAGMA user_version").fetchone()[0] < 1:
-            # Values once blocked by the exact training range ("...; verify it.") are rechecked against the wider bounds.
-            legacy = db.execute("SELECT id,disease,status,values_json,issues_json FROM records WHERE issues_json LIKE ?",
-                                ("%is outside the training range (%; verify it.%",)).fetchall()
-            if legacy:
-                _recheck_old_ranges(db, legacy)
-            # Uploads were once saved without a status, so valid unscored rows were left 'Incomplete'.
-            db.execute("UPDATE records SET status='Ready' WHERE status='Incomplete' AND issues_json='[]' AND score IS NULL")
-            db.execute("PRAGMA user_version=1")
-    # Demo accounts are explicitly enabled for classroom use only.
+        if db.execute("PRAGMA user_version").fetchone()[0] >= 1:
+            return
+        # Values once blocked by the exact training range ("...; verify it.") are rechecked against the wider bounds.
+        legacy = db.execute("SELECT id,disease,status,values_json,issues_json FROM records WHERE issues_json LIKE ?",
+                            ("%is outside the training range (%; verify it.%",)).fetchall()
+        if legacy:
+            _recheck_old_ranges(db, legacy)
+        # Uploads were once saved without a status, so valid unscored rows were left 'Incomplete'.
+        db.execute("UPDATE records SET status='Ready' WHERE status='Incomplete' AND issues_json='[]' AND score IS NULL")
+        db.execute("PRAGMA user_version=1")
+
+
+def init_db():
+    """Apply migrations, then create the accounts named in the environment (once per database per process)."""
+    database.migrate(legacy_upgrade=_legacy_sqlite_upgrade)
+    if not database.is_postgres():
+        _sqlite_repairs()
+    key = database.target()
+    if key in _bootstrapped:
+        return
+    _bootstrapped.add(key)
+    # Demo accounts are for a local classroom run only; they are refused on PostgreSQL (the live site).
     if os.environ.get("AHEAD_ENABLE_DEMO_ACCOUNTS") == "1":
-        create_user("user@ahead.demo", "user123", ROLE_PATIENT, "Sarah Ahmed", demo=True)
-        create_user("doctor@ahead.demo", "doctor123", ROLE_DOCTOR, "Dr. Sarah Ahmed", "AHEAD Medical Center", demo=True)
-    doctor_email = os.environ.get("AHEAD_DOCTOR_EMAIL")
-    doctor_password = os.environ.get("AHEAD_DOCTOR_PASSWORD")
-    if doctor_email and doctor_password:
-        try:
-            create_user(doctor_email, doctor_password, ROLE_DOCTOR, "Doctor")
-        except ValueError:
-            # A misconfigured secret must not take the whole site down (including sign-in).
-            logging.getLogger(__name__).warning(
-                "AHEAD_DOCTOR_PASSWORD is shorter than 12 characters; the doctor account was not created.")
+        if database.is_postgres():
+            log.warning("AHEAD_ENABLE_DEMO_ACCOUNTS is ignored on PostgreSQL: no demo accounts on the live site.")
+        else:
+            create_user("user@ahead.demo", "user123", ROLE_PATIENT, "Sarah Ahmed", demo=True)
+            create_user("doctor@ahead.demo", "doctor123", ROLE_DOCTOR, "Dr. Sarah Ahmed", "AHEAD Medical Center", demo=True)
+            create_user("admin@ahead.demo", "admin123", ROLE_ADMIN, "AHEAD Admin", demo=True)
+    for prefix, role, name in (("AHEAD_ADMIN", ROLE_ADMIN, "AHEAD Admin"), ("AHEAD_DOCTOR", ROLE_DOCTOR, "Doctor")):
+        email, password = os.environ.get(f"{prefix}_EMAIL"), os.environ.get(f"{prefix}_PASSWORD")
+        if email and password:
+            try:
+                create_user(email, password, role, name)
+            except ValueError:
+                # A misconfigured secret must not take the whole site down (including sign-in).
+                log.warning("%s_PASSWORD is shorter than %d characters; that account was not created.", prefix, MIN_PASSWORD)
 
 
 def _recheck_old_ranges(db, rows):
@@ -129,40 +126,49 @@ def has_doctor_account():
         return db.execute("SELECT 1 FROM users WHERE role=? LIMIT 1", (ROLE_DOCTOR,)).fetchone() is not None
 
 
-def ephemeral_storage():
-    """True when the database sits on a disk that is wiped on restart (Streamlit Community Cloud).
-
-    Community Cloud clones the repository under /mount/src; AHEAD_EPHEMERAL_STORAGE=1/0 overrides the guess.
-    """
-    override = os.environ.get("AHEAD_EPHEMERAL_STORAGE")
-    if override in ("0", "1"):
-        return override == "1"
-    return str(_db_path().resolve()).startswith("/mount/src/")
-
-
-def create_user(email, password, role, name, institution="", demo=False):
-    if role not in (ROLE_PATIENT, ROLE_DOCTOR) or (len(password) < 12 and not demo):
-        raise ValueError("Use a password of at least 12 characters.")
+def create_user(email, password, role, name, institution="", demo=False, created_by=None):
+    """Create an account. False if the email is taken; ValueError for a short password or an unknown role."""
+    if role not in ROLES or (len(password) < MIN_PASSWORD and not demo):
+        raise ValueError(f"Use a password of at least {MIN_PASSWORD} characters.")
+    email = email.strip().lower()
     with connection() as db:
-        if db.execute("SELECT 1 FROM users WHERE email=?", (email.strip().lower(),)).fetchone():
+        if db.execute("SELECT 1 FROM users WHERE email=?", (email,)).fetchone():
             return False
-    with connection() as db:
-        try:
-            db.execute("INSERT INTO users(email,password_hash,role,name,institution) VALUES(?,?,?,?,?)",
-                       (email.strip().lower(), password_hash(password), role, name.strip(), institution.strip()))
-        except sqlite3.IntegrityError:
-            return False
+    try:
+        with connection() as db:
+            db.execute("INSERT INTO users(email,password_hash,role,name,institution,created_at,created_by) VALUES(?,?,?,?,?,?,?)",
+                       (email, password_hash(password), role, name.strip(), institution.strip(),
+                        datetime.now(timezone.utc).isoformat(), created_by))
+    except database.IntegrityError:
+        return False
     return True
 
 
-def authenticate(email, password, role):
-    with connection() as db:
-        row = db.execute("SELECT * FROM users WHERE email=? AND role=?", (email.strip().lower(), role)).fetchone()
-    if not row or not verify_password(password, row["password_hash"]):
-        return None
+def user_view(row):
+    """The signed-in user as the pages see it (no password hash)."""
     result = {k: row[k] for k in ("id", "email", "role", "name", "institution")}
     result["preferences"] = json.loads(row["preferences_json"] or "{}")
     return result
+
+
+def authenticate(email, password, role):
+    """The account for these details, or None. role may be one role or a tuple of roles.
+    Deactivated accounts never sign in."""
+    roles = (role,) if isinstance(role, str) else tuple(role)
+    with connection() as db:
+        row = db.execute("SELECT * FROM users WHERE email=?", ((email or "").strip().lower(),)).fetchone()
+    if not row:
+        verify_password(password or "", _DUMMY_HASH)
+        return None
+    if not verify_password(password or "", row["password_hash"]) or row["role"] not in roles or not row["is_active"]:
+        return None
+    return user_view(row)
+
+
+def get_user(user_id):
+    with connection() as db:
+        row = db.execute("SELECT * FROM users WHERE id=?", (user_id,)).fetchone()
+    return user_view(row) if row else None
 
 
 def update_preferences(user_id, preferences):
@@ -182,7 +188,8 @@ def change_password(user_id, current, new):
         row = db.execute("SELECT password_hash FROM users WHERE id=?", (user_id,)).fetchone()
         if not row or not verify_password(current, row["password_hash"]):
             return False
-        db.execute("UPDATE users SET password_hash=? WHERE id=?", (password_hash(new), user_id))
+        # A new password signs every other browser out (their sessions carry the old token_version).
+        db.execute("UPDATE users SET password_hash=?,token_version=token_version+1 WHERE id=?", (password_hash(new), user_id))
     return True
 
 

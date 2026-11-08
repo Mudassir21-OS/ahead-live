@@ -19,9 +19,10 @@ echo.
 echo AHEAD is starting. Open http://localhost:8501 in your browser.
 echo Doctor demo: doctor@ahead.demo / doctor123
 echo Patient demo: user@ahead.demo / user123
-echo Use only fictional or de-identified patient data.
+echo Admin demo:   admin@ahead.demo / admin123
+echo Local demo only: demo accounts never work on the live site.
 echo.
-python -m streamlit run app.py
+python -m streamlit run server.py
 pause
 exit /b 0
 :failed

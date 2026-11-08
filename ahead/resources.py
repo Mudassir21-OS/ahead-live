@@ -36,7 +36,13 @@ def load_dataset(disease: str) -> pd.DataFrame:
     The raw reference dataset.  Cached as a resource (shared object, no per-call
     copy — heart.csv alone is ~140 MB in memory), so callers must not mutate it.
     """
-    return pd.read_csv(DATA_DIR / DISEASES[disease]["dataset"])
+    frame = pd.read_csv(DATA_DIR / DISEASES[disease]["dataset"])
+    # Text columns as categories: heart.csv drops from ~144 MB to ~20 MB, which keeps the app inside a
+    # 512 MB server. Values, counts and options are unchanged.
+    for column in frame.columns:
+        if frame[column].dtype == object or pd.api.types.is_string_dtype(frame[column].dtype):
+            frame[column] = frame[column].astype("category")
+    return frame
 
 
 @st.cache_data(show_spinner=False)

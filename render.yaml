@@ -1,0 +1,25 @@
+# Render Blueprint for the live AHEAD site (Render dashboard → New → Blueprint → this repo and branch).
+# Secrets are entered in the Render dashboard when asked ("sync: false"); they are never stored in Git.
+services:
+  - type: web
+    name: ahead
+    runtime: python
+    plan: free            # 512 MB RAM. AHEAD uses about 330 MB with several people signed in.
+    region: frankfurt     # same region as the Neon database
+    buildCommand: pip install -r requirements.txt
+    startCommand: streamlit run server.py --server.port $PORT --server.address 0.0.0.0 --server.headless true
+    healthCheckPath: /healthz
+    autoDeploy: true
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.13.5"
+      - key: DATABASE_URL          # Neon connection string (pooling not needed: the app keeps its own small pool)
+        sync: false
+      - key: GEMINI_API_KEY        # optional: AI assistant, insights and food photos
+        sync: false
+      - key: AHEAD_PUBLIC_URL      # e.g. https://ahead.onrender.com (set after the first deploy; used in links)
+        sync: false
+      - key: AHEAD_TRUST_PROXY     # proxy hops in front of the app on Render, for real visitor addresses
+        value: "3"
+      - key: AHEAD_DB_POOL_SIZE
+        value: "5"

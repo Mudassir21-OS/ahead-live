@@ -10,11 +10,11 @@ import os
 
 import streamlit as st
 
-from ahead.config import BASE, ROLE_DOCTOR, ROLE_PATIENT
+from ahead import accounts
+from ahead.config import BASE, ROLE_ADMIN, ROLE_DOCTOR, ROLE_PATIENT
 from ahead.resources import icon_uri, image_data_uri, static_url
-from ahead.storage import authenticate, create_user, ephemeral_storage, has_doctor_account, load_screenings
-from ahead.config import DISEASES
-from datetime import datetime
+from ahead.session import begin, request_ip
+from ahead.storage import MIN_PASSWORD, authenticate, create_user, has_doctor_account
 from ahead.platform_data import event
 
 
@@ -69,23 +69,45 @@ def _footer() -> None:
 def _sign_in(email: str, password: str, account_type: str) -> str | None:
     """Return an error message, or None on success (session is updated)."""
     email = (email or "").strip().lower()
-    wanted = ROLE_PATIENT if account_type == "Patient" else ROLE_DOCTOR
+    wanted = (ROLE_PATIENT,) if account_type == "Patient" else (ROLE_DOCTOR, ROLE_ADMIN)
+    ip = request_ip()
+    if accounts.sign_in_blocked(email, ip):
+        return "Too many failed attempts. Wait 15 minutes, then try again."
     account = authenticate(email, password, wanted)
     if not account:
+        accounts.record_failed_sign_in(email, ip)
         return "Incorrect email, password or account type."
-    st.session_state.authenticated = True
-    st.session_state.user = account
-    if wanted == ROLE_PATIENT:
+    begin(account)
+    if account["role"] == ROLE_PATIENT:
         event(account['id'],'login')
-    st.session_state.prefs = {**st.session_state.prefs, **account.get("preferences", {}).get("toggles", {})}
-    st.session_state.appearance_mode = account.get("preferences", {}).get("appearance", "Light")
-    st.session_state.screening_history = [
-        {"time": datetime.fromisoformat(item["created_at"]), "disease": item["disease"],
-         "label": DISEASES[item["disease"]]["label"], "model": item["model"],
-         "probability": item["score"], "prediction": item["prediction"], "threshold": item["threshold"]}
-        for item in load_screenings(account["id"]) if item["disease"] in DISEASES
-    ]
     return None
+
+
+def _reserved(email: str) -> bool:
+    """Emails kept for the accounts created from the server settings."""
+    email = email.strip().lower()
+    return any(email == os.environ.get(name, "").strip().lower() for name in ("AHEAD_DOCTOR_EMAIL", "AHEAD_ADMIN_EMAIL"))
+
+
+def _register(name: str, email: str, password: str, confirm: str) -> tuple[bool, str]:
+    email = (email or "").strip().lower()
+    local, _, domain = email.partition("@")
+    if not (name or "").strip() or not local or "." not in domain or len(email) > 254:
+        return False, "Enter your name and a valid email address."
+    if len(password or "") < MIN_PASSWORD:
+        return False, f"Choose a password of at least {MIN_PASSWORD} characters."
+    if password != confirm:
+        return False, "The two passwords don't match."
+    ip = request_ip()
+    if not accounts.sign_up_allowed(ip):
+        return False, "Too many new accounts from this network. Try again in an hour."
+    if _reserved(email):
+        return False, "This email address is reserved."
+    accounts.record_sign_up(ip)
+    if not create_user(email, password, ROLE_PATIENT, name.strip()[:120]):
+        return False, "That email is already registered."
+    accounts.audit("patient_registered", ip=ip)
+    return True, "Account created. Sign in above."
 
 
 def render_login() -> None:
@@ -129,6 +151,8 @@ def render_login() -> None:
         with right:
             with st.container(key="login_form"):
                 st.html('<div class="login-heading"><h2>Welcome to AHEAD</h2><p>Sign in to continue.</p></div>')
+                if st.session_state.pop("signed_out_notice", False):
+                    st.info("You've been signed out. Please sign in again.")
 
                 account_type = st.segmented_control(
                     "Account Type",
@@ -158,29 +182,20 @@ def render_login() -> None:
 
                 if account_type != "Patient" and not has_doctor_account():
                     st.html(
-                        '<div class="login-note">No doctor account is set up on this deployment yet. '
-                        'Doctor / Admin access is created by the project team.</div>'
+                        '<div class="login-note">No doctor account is set up yet. '
+                        'Doctor and admin accounts are created by the AHEAD admin.</div>'
                     )
-                if ephemeral_storage():
-                    st.html(
-                        '<div class="login-note">This is a hosted demo: accounts and saved records are reset '
-                        'whenever the app restarts. Use fictional data only.</div>'
-                    )
+                st.html('<div class="login-note">Forgot your password? Ask the AHEAD team for a reset link.</div>')
 
                 with st.expander("Create a patient account"):
                     with st.form("patient_registration"):
-                        name = st.text_input("Your full name")
-                        new_email = st.text_input("Your email")
-                        new_password = st.text_input("Choose a password (12+ characters)", type="password")
+                        name = st.text_input("Your full name", max_chars=120)
+                        new_email = st.text_input("Your email", max_chars=254)
+                        new_password = st.text_input(f"Choose a password ({MIN_PASSWORD}+ characters)", type="password")
+                        confirm = st.text_input("Type the password again", type="password")
                         if st.form_submit_button("Create account"):
-                            if not name.strip() or "@" not in new_email or len(new_password) < 12:
-                                st.error("Provide a name, valid email and password of at least 12 characters.")
-                            elif new_email.strip().lower() == os.environ.get("AHEAD_DOCTOR_EMAIL", "").strip().lower():
-                                st.error("This email address is reserved.")
-                            elif create_user(new_email, new_password, ROLE_PATIENT, name):
-                                st.success("Account created. Sign in above.")
-                            else:
-                                st.error("That email is already registered.")
+                            ok, message = _register(name, new_email, new_password, confirm)
+                            (st.success if ok else st.error)(message)
 
     _footer()
 
@@ -232,9 +247,10 @@ PUBLIC_CONTENT = {
         "intro": "A short guide to signing in, running a screening and reading the result.",
         "cards": [
             ("1", "Sign in", ["Patients can register with \"Create a patient account\" on the sign-in card, then "
-                             "sign in with Patient selected. Doctor / Admin accounts are set up by the project team.",
-                             "Your screenings, lifestyle check-ins and medication records are saved to your account. "
-                             "On the hosted demo they are reset whenever the app restarts, so use fictional data only."]),
+                             "sign in with Patient selected. Doctor accounts are added by the AHEAD admin, and doctors choose "
+                             "their own password through a one-time set-up link.",
+                             "Your screenings, lifestyle check-ins and medication records are saved to your account, and "
+                             "you stay signed in when you reload the page. AHEAD signs you out after 2 hours without activity."]),
             ("2", "Run a screening", ["Open Screenings, pick a condition and fill in the form. Lab values are optional unless "
                                      "marked as needed. "
                                      "AHEAD scores the answers with the recommended model (you can compare alternatives)."]),
@@ -274,4 +290,52 @@ def render_public_page(kind: str) -> None:
 </div>
 """
     )
+    _footer()
+
+
+# =============================================================================
+# ONE-TIME LINKS: ACCOUNT SET-UP AND PASSWORD RESET
+# =============================================================================
+
+def render_account_link(token: str) -> None:
+    """/?setup=<token> or /?reset=<token>: the person chooses a new password, once."""
+    _public_chrome("login")
+    found = accounts.link_account(token)
+    with st.container(key="login_shell"):
+        _, middle, _ = st.columns([0.25, 0.5, 0.25])
+        with middle, st.container(key="login_form"):
+            if st.session_state.get("link_done"):
+                st.html('<div class="login-heading"><h2>Password saved</h2><p>You can sign in now.</p></div>')
+                if st.button("Go to sign in", type="primary", width="stretch"):
+                    st.session_state.pop("link_done", None)
+                    st.query_params.clear()
+                    st.rerun()
+                return
+            if not found:
+                st.html('<div class="login-heading"><h2>This link has expired</h2>'
+                        '<p>Links work once. Set-up links last 3 days and reset links 60 minutes. '
+                        'Ask the AHEAD team for a new one.</p></div>')
+                if st.button("Go to sign in", width="stretch"):
+                    st.query_params.clear()
+                    st.rerun()
+                return
+            user = found["user"]
+            title = "Set up your AHEAD account" if found["purpose"] == "setup" else "Choose a new password"
+            st.html(f'<div class="login-heading"><h2>{escape(title)}</h2>'
+                    f'<p>{escape(user["name"])} · {escape(user["email"])}</p></div>')
+            with st.form("account_link_form", border=False):
+                password = st.text_input(f"New password ({MIN_PASSWORD}+ characters)", type="password",
+                                         autocomplete="new-password")
+                confirm = st.text_input("Type it again", type="password", autocomplete="new-password")
+                submitted = st.form_submit_button("Save password", type="primary", width="stretch")
+            if submitted:
+                if len(password or "") < MIN_PASSWORD:
+                    st.error(f"Use at least {MIN_PASSWORD} characters.")
+                elif password != confirm:
+                    st.error("The two passwords don't match.")
+                elif accounts.use_link(token, password, request_ip()):
+                    st.session_state.link_done = True
+                    st.rerun()
+                else:
+                    st.error("This link has expired. Ask the AHEAD team for a new one.")
     _footer()

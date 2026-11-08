@@ -11,7 +11,7 @@ from html import escape
 
 import streamlit as st
 
-from ahead.config import DISCLAIMER_TEXT, DISEASES, ROLE_DOCTOR, ROLE_PATIENT, form_fields, model_label
+from ahead.config import DISCLAIMER_TEXT, DISEASES, ROLE_ADMIN, ROLE_DOCTOR, ROLE_PATIENT, form_fields, model_label
 from ahead.resources import available_models, best_model, decision_threshold, icon_uri, load_pipeline, model_reason
 from ahead.storage import save_screening
 from ahead.triage import HISTORY, track_text
@@ -70,9 +70,8 @@ def open_assistant(from_nav: str) -> None:
 
 
 def logout() -> None:
-    for key in list(st.session_state.keys()):
-        del st.session_state[key]
-    st.rerun()
+    from ahead.session import sign_out  # local import: session imports storage, which this module also uses
+    sign_out()
 
 
 def current_user() -> dict:
@@ -97,8 +96,9 @@ def current_user() -> dict:
         "initials": initials,
         "email": user.get("email", ""),
         "role": role,
-        "role_label": "Doctor" if role == ROLE_DOCTOR else "Patient",
+        "role_label": {ROLE_DOCTOR: "Doctor", ROLE_ADMIN: "Admin"}.get(role, "Patient"),
         "is_doctor": role == ROLE_DOCTOR,
+        "is_admin": role == ROLE_ADMIN,
         "institution": user.get("institution", ""),
     }
 

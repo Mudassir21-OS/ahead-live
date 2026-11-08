@@ -25,19 +25,21 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-from ahead.components import current_user, go_to, init_state, logout, open_assistant  # noqa: E402
+from ahead.components import current_user, go_to, init_state, open_assistant  # noqa: E402
+from ahead.session import browser_scripts, restore, sign_out  # noqa: E402
 from ahead.config import NAV_ITEMS  # noqa: E402
 from ahead.resources import image_data_uri  # noqa: E402
 from ahead.pages.analytics import render_analytics  # noqa: E402
 from ahead.pages.assistant import render_assistant  # noqa: E402
 from ahead.pages.clinical import render_clinical_dashboard  # noqa: E402
 from ahead.pages.overview import render_overview  # noqa: E402
-from ahead.pages.public import PUBLIC_CONTENT, render_login, render_public_page  # noqa: E402
+from ahead.pages.public import PUBLIC_CONTENT, render_account_link, render_login, render_public_page  # noqa: E402
+from ahead.pages.admin import render_admin  # noqa: E402
 from ahead.pages.screenings import render_screenings  # noqa: E402
 from ahead.pages.settings import render_settings  # noqa: E402
 from ahead.theme import apply_theme, inject_app_css, inject_global_css, sidebar_dynamic_css  # noqa: E402
 from ahead.storage import init_db  # noqa: E402
-from ahead.platform_data import init_platform, notifications  # noqa: E402
+from ahead.platform_data import notifications, startup_platform  # noqa: E402
 from ahead.pages.wellness import render_wellness  # noqa: E402
 from ahead.pages.food import render_food  # noqa: E402
 from ahead.pages.medications import render_medications  # noqa: E402
@@ -46,8 +48,10 @@ from ahead.pages.notifications import refresh_patient_notifications  # noqa: E40
 from ahead.pages.doctor_intelligence import render_doctor_intelligence  # noqa: E402
 
 init_db()
-init_platform()
+startup_platform()
 init_state()
+restore()          # a reload signs back in from the session cookie; deactivated accounts are signed out
+browser_scripts()  # sets or clears that cookie after signing in or out
 inject_global_css()
 
 # =============================================================================
@@ -57,6 +61,12 @@ inject_global_css()
 requested = st.query_params.get("page", "login")
 if requested not in PUBLIC_CONTENT:
     requested = "login"
+
+link_token = st.query_params.get("setup") or st.query_params.get("reset")
+if link_token and not st.session_state.authenticated:
+    apply_theme(force_light=True)
+    render_account_link(link_token)
+    st.stop()
 
 if not st.session_state.authenticated:
     apply_theme(force_light=True)
@@ -79,11 +89,15 @@ user = current_user()
 # =============================================================================
 
 patient_only = {'wellness','food','medications','notifications'}
-visible_nav = [item for item in NAV_ITEMS if (not item[3] or user["is_doctor"])
-               and (not user["is_doctor"] or item[0] not in patient_only)]
+if user["is_admin"]:
+    # Admins manage accounts only: no screenings, records or patient pages (least access).
+    visible_nav = [("admin", "Accounts & Security", "settings.svg", False)]
+else:
+    visible_nav = [item for item in NAV_ITEMS if (not item[3] or user["is_doctor"])
+                   and (not user["is_doctor"] or item[0] not in patient_only)]
 nav_keys = {item[0] for item in visible_nav}
 if st.session_state.nav not in nav_keys:
-    st.session_state.nav = "overview"
+    st.session_state.nav = "admin" if user["is_admin"] else "overview"
 active = st.session_state.nav
 
 with st.sidebar:
@@ -102,12 +116,12 @@ with st.sidebar:
 
     with st.container(key="sidebar_nav"):
         unread = 0
-        if not user['is_doctor']:
+        if not user['is_doctor'] and not user['is_admin']:
             refresh_patient_notifications(st.session_state.user['id'])
             unread=sum(not n['read_at'] for n in notifications(st.session_state.user['id']))
         previous_group = None
         for key, label, _icon, _doctor_only in visible_nav:
-            group = ('Care & insights' if key in ('clinical','intelligence','analytics') else
+            group = ('Administration' if key == 'admin' else 'Care & insights' if key in ('clinical','intelligence','analytics') else
                      'My health' if key in ('wellness','food','medications') else
                      'Support & account' if key in ('notifications','assistant','settings') else None)
             if group != previous_group:
@@ -134,13 +148,13 @@ with st.sidebar:
 """
         )
         if st.button("Log Out", key="sidebar_logout", width="stretch"):
-            logout()
+            sign_out()
 
 # =============================================================================
 # FLOATING ASSISTANT BUTTON
 # =============================================================================
 
-if active != "assistant":
+if active not in ("assistant", "admin"):
     with st.container(key="open_assistant"):
         if st.button("Open AHEAD Assistant", key="open_assistant_button"):
             open_assistant(active)
@@ -161,9 +175,12 @@ PAGES = {
     "intelligence":render_doctor_intelligence,
     "assistant": render_assistant,
     "settings": render_settings,
+    "admin": render_admin,
 }
 
-if (active in ('clinical','intelligence') and not user['is_doctor']) or (active in patient_only and user['is_doctor']):
+if active not in nav_keys or (active == 'admin') != user['is_admin']:
+    st.error("You don't have access to this page.")
+elif (active in ('clinical','intelligence') and not user['is_doctor']) or (active in patient_only and user['is_doctor']):
     st.error("Doctor access required.")
 else:
     PAGES[active]()

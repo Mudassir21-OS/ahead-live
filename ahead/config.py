@@ -371,6 +371,7 @@ NAV_ITEMS = [
 
 ROLE_PATIENT = "Patient"
 ROLE_DOCTOR = "Doctor"
+ROLE_ADMIN = "Admin"
 
 DISCLAIMER_TEXT = (
     "AHEAD is an educational and research screening prototype. It does not "

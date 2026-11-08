@@ -11,6 +11,8 @@ import streamlit as st
 
 from ahead.components import current_user, go_to, logout, markdown_literal, pref, page_header
 from ahead.theme import APPEARANCE_OPTIONS, appearance_mode
+from ahead import accounts
+from ahead.session import request_ip
 from ahead.storage import change_password, delete_records, delete_screenings, update_profile, update_preferences
 from ahead.platform_data import doctors_for, grant_doctor, revoke_doctor, ai_consent, plans, prevention_plans
 
@@ -226,17 +228,25 @@ def _account_tab(user: dict) -> None:
                 elif not change_password(st.session_state.user["id"], current_pw, new_pw):
                     st.error("The current password is incorrect.")
                 else:
-                    st.success("Password updated.")
+                    if st.session_state.get("session_id"):
+                        accounts.keep_session_after_password_change(st.session_state.session_id, user["id"])
+                    accounts.audit("password_changed", actor_id=user["id"], target_user_id=user["id"], ip=request_ip())
+                    st.success("Password updated. Your other devices were signed out.")
 
     with st.expander("🖥  Manage sessions — view and manage active sessions"):
         st.html(_row("●", "This browser", f"Signed in as {user['email']} · active now"))
-        st.caption("AHEAD keeps no server-side sessions; signing out ends this one.")
+        st.caption("You stay signed in when you reload the page. AHEAD signs you out after 2 hours without "
+                   "activity, and after 12 hours in any case.")
+        if st.button("Sign out on all my devices", key="settings_signout_all"):
+            accounts.sign_out_everywhere(user["id"])
+            accounts.audit("signed_out_everywhere", actor_id=user["id"], target_user_id=user["id"], ip=request_ip())
+            logout()
 
     st.html(
         """
 <div class="settings-danger">
     <strong>Log out</strong>
-    <p>Sign out of your account. Your session screening history will be cleared.</p>
+    <p>Sign out of AHEAD on this browser. Your saved history stays in your account.</p>
 </div>
 """
     )

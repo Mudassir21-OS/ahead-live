@@ -1,13 +1,13 @@
 """Patient-owned wellness and care records; every doctor read checks an explicit grant."""
 import json
-import sqlite3
 from collections import Counter
 from datetime import date, datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 from ahead import prevention
 from ahead.config import DISEASES
-from ahead.storage import connection
+from ahead import db as database
+from ahead.storage import connection, init_db
 
 
 def now():
@@ -34,72 +34,23 @@ def _since(days=30):
 
 
 def init_platform():
+    """Tables come from the migrations (init_db). Then stop plans whose doctor lost access while the app was
+    down; revoking access already stops that patient's plans at once, so this is a safety sweep."""
+    init_db()
     with connection() as db:
-        db.executescript("""
-        CREATE TABLE IF NOT EXISTS care_access (
-          patient_id INTEGER NOT NULL REFERENCES users(id), doctor_id INTEGER NOT NULL REFERENCES users(id),
-          created_at TEXT NOT NULL, PRIMARY KEY(patient_id,doctor_id));
-        CREATE TABLE IF NOT EXISTS lifestyle (
-          id INTEGER PRIMARY KEY, patient_id INTEGER NOT NULL REFERENCES users(id),
-          values_json TEXT NOT NULL, scores_json TEXT NOT NULL, created_at TEXT NOT NULL);
-        CREATE INDEX IF NOT EXISTS lifestyle_patient ON lifestyle(patient_id,created_at);
-        CREATE TABLE IF NOT EXISTS lifestyle_goals (
-          patient_id INTEGER PRIMARY KEY REFERENCES users(id), goals_json TEXT NOT NULL,updated_at TEXT NOT NULL);
-        CREATE TABLE IF NOT EXISTS challenge_days (
-          patient_id INTEGER NOT NULL REFERENCES users(id), day TEXT NOT NULL,minutes INTEGER NOT NULL,
-          source TEXT NOT NULL DEFAULT 'manual', updated_at TEXT NOT NULL,PRIMARY KEY(patient_id,day));
-        CREATE TABLE IF NOT EXISTS food_entries (
-          id INTEGER PRIMARY KEY,patient_id INTEGER NOT NULL REFERENCES users(id),
-          foods_json TEXT NOT NULL,nutrients_json TEXT NOT NULL,source TEXT NOT NULL,
-          created_at TEXT NOT NULL);
-        CREATE TABLE IF NOT EXISTS medication_plans (
-          id INTEGER PRIMARY KEY,patient_id INTEGER NOT NULL REFERENCES users(id),
-          doctor_id INTEGER NOT NULL REFERENCES users(id), name TEXT NOT NULL,dosage TEXT NOT NULL,
-          instructions TEXT NOT NULL,times_json TEXT NOT NULL,days_json TEXT NOT NULL,
-          start_date TEXT NOT NULL,end_date TEXT NOT NULL,notes TEXT NOT NULL DEFAULT '',
-          status TEXT NOT NULL DEFAULT 'active',created_at TEXT NOT NULL,updated_at TEXT NOT NULL);
-        CREATE INDEX IF NOT EXISTS medication_patient ON medication_plans(patient_id,status);
-        CREATE TABLE IF NOT EXISTS medication_audit (
-          id INTEGER PRIMARY KEY,plan_id INTEGER NOT NULL REFERENCES medication_plans(id),
-          doctor_id INTEGER NOT NULL REFERENCES users(id),action TEXT NOT NULL,details_json TEXT NOT NULL,created_at TEXT NOT NULL);
-        CREATE TABLE IF NOT EXISTS dose_logs (
-          id INTEGER PRIMARY KEY,plan_id INTEGER NOT NULL REFERENCES medication_plans(id),
-          patient_id INTEGER NOT NULL REFERENCES users(id),scheduled_date TEXT NOT NULL,scheduled_time TEXT NOT NULL,
-          status TEXT NOT NULL CHECK(status IN ('taken','skipped')),
-          logged_at TEXT NOT NULL, UNIQUE(plan_id,scheduled_date,scheduled_time));
-        CREATE TABLE IF NOT EXISTS notifications (
-          id INTEGER PRIMARY KEY,patient_id INTEGER NOT NULL REFERENCES users(id),type TEXT NOT NULL,
-          title TEXT NOT NULL,description TEXT NOT NULL,action TEXT NOT NULL DEFAULT '',
-          dedupe_key TEXT,created_at TEXT NOT NULL,read_at TEXT,
-          UNIQUE(patient_id,dedupe_key));
-        CREATE TABLE IF NOT EXISTS activity_events (
-          id INTEGER PRIMARY KEY,patient_id INTEGER NOT NULL REFERENCES users(id),type TEXT NOT NULL,
-          created_at TEXT NOT NULL);
-        DROP INDEX IF EXISTS activity_patient; -- superseded by activity_patient_type, which also covers type
-        CREATE INDEX IF NOT EXISTS activity_patient_type ON activity_events(patient_id,created_at,type);
-        CREATE TABLE IF NOT EXISTS record_predictions (
-          id INTEGER PRIMARY KEY, record_id INTEGER NOT NULL REFERENCES records(id),
-          owner_id INTEGER NOT NULL REFERENCES users(id),disease TEXT NOT NULL,
-          values_json TEXT NOT NULL,score REAL NOT NULL,threshold REAL NOT NULL,
-          model TEXT NOT NULL,source TEXT NOT NULL,created_at TEXT NOT NULL);
-        CREATE INDEX IF NOT EXISTS record_predictions_owner ON record_predictions(owner_id,record_id,created_at);
-        -- screening_id has no foreign key: deleting a patient's screening history must not be blocked by a plan.
-        CREATE TABLE IF NOT EXISTS prevention_plans (
-          id INTEGER PRIMARY KEY,patient_id INTEGER NOT NULL REFERENCES users(id),
-          doctor_id INTEGER NOT NULL REFERENCES users(id),disease TEXT NOT NULL,screening_id INTEGER,
-          targets_json TEXT NOT NULL,note TEXT NOT NULL DEFAULT '',recheck_date TEXT NOT NULL,
-          status TEXT NOT NULL DEFAULT 'draft' CHECK(status IN ('draft','active','paused','stopped')),
-          started_at TEXT,created_at TEXT NOT NULL,updated_at TEXT NOT NULL);
-        CREATE INDEX IF NOT EXISTS prevention_patient ON prevention_plans(patient_id,doctor_id,status);
-        CREATE TABLE IF NOT EXISTS prevention_audit (
-          id INTEGER PRIMARY KEY,plan_id INTEGER NOT NULL REFERENCES prevention_plans(id),
-          doctor_id INTEGER NOT NULL REFERENCES users(id),action TEXT NOT NULL,details_json TEXT NOT NULL,created_at TEXT NOT NULL);
-        CREATE INDEX IF NOT EXISTS prevention_audit_plan ON prevention_audit(plan_id,id);
-        """)
-        if 'ai_allowed' not in {r['name'] for r in db.execute('PRAGMA table_info(care_access)')}:
-            db.execute('ALTER TABLE care_access ADD COLUMN ai_allowed INTEGER NOT NULL DEFAULT 0')
         stopped=_stop_unlinked_plans(db);stopped_prevention=_stop_unlinked_prevention(db)
     _notify_unlinked(stopped);_notify_unlinked_prevention(stopped_prevention)
+
+
+_started = set()
+
+
+def startup_platform():
+    """init_platform() once per database per process: app.py runs on every click, the sweep needn't."""
+    key = database.target()
+    if key not in _started:
+        init_platform()
+        _started.add(key)
 
 
 def _stop_unlinked_plans(db, patient_id=None):
@@ -725,9 +676,9 @@ def activity_counts(doctor_id):
     linked='patient_id IN (SELECT patient_id FROM care_access WHERE doctor_id=?)'
     with connection() as db:
         active=db.execute(f'SELECT COUNT(DISTINCT patient_id) FROM activity_events WHERE {linked} AND created_at>=?',(doctor_id,since)).fetchone()[0]
-        returning=db.execute(f"SELECT COUNT(*) FROM (SELECT patient_id FROM activity_events WHERE {linked} AND type='login' GROUP BY patient_id HAVING COUNT(*)>=2)",(doctor_id,)).fetchone()[0]
+        returning=db.execute(f"SELECT COUNT(*) FROM (SELECT patient_id FROM activity_events WHERE {linked} AND type='login' GROUP BY patient_id HAVING COUNT(*)>=2) repeat_logins",(doctor_id,)).fetchone()[0]
         # Counted per UTC hour in SQL so only the buckets are converted; every UTC hour lies within one Dubai day.
-        hours=db.execute(f'SELECT substr(created_at,1,13) hour,type,COUNT(*) n FROM activity_events WHERE {linked} AND created_at>=? GROUP BY hour,type',(doctor_id,since)).fetchall()
+        hours=db.execute(f'SELECT substr(created_at,1,13) AS hour,type,COUNT(*) AS n FROM activity_events WHERE {linked} AND created_at>=? GROUP BY hour,type',(doctor_id,since)).fetchall()
     daily=Counter()
     for r in hours:daily[(to_local(r['hour']).date(),r['type'])]+=r['n']
     return active,returning,daily
