@@ -7,13 +7,16 @@ Routes added next to Streamlit:
   POST /auth/session  swaps a one-time sign-in code for this tab's HttpOnly session cookie
   POST /auth/logout   ends this tab's session and deletes its cookie (other tabs keep theirs)
 
-It also starts the background email sender (ahead/mailer.py) when BREVO_API_KEY is set.
+It also starts the background email sender (ahead/mailer.py) when BREVO_API_KEY is set, and loads the
+models in the background so the first screening after a restart doesn't wait (AHEAD_WARM_UP=0 turns it off).
 
 `streamlit run app.py` still works for quick local UI work, but sign-ins then don't survive a reload.
 """
 
 import json
 import logging
+import os
+import threading
 from urllib.parse import urlsplit
 
 import streamlit as st
@@ -132,6 +135,28 @@ class SecurityHeaders:
         await self.app(scope, receive, send_with_headers)
 
 
+def _warm_up():
+    """Background: wait for Streamlit's runtime (so the caches are the ones pages use), then load models."""
+    import time
+    from streamlit.runtime import Runtime
+    from ahead.resources import warm_up
+    for _ in range(600):
+        if Runtime.exists():
+            break
+        time.sleep(0.1)
+    # Outside a page run Streamlit warns "missing ScriptRunContext" on every cached call; it's harmless here.
+    noisy = logging.getLogger("streamlit.runtime.scriptrunner_utils.script_run_context")
+    level, started = noisy.level, time.monotonic()
+    noisy.setLevel(logging.ERROR)
+    try:
+        warm_up()
+        print(f"AHEAD: models warmed up in {time.monotonic() - started:.1f} s", flush=True)
+    except Exception:
+        log.exception("model warm-up failed (pages will load models when first needed)")
+    finally:
+        noisy.setLevel(level)
+
+
 def _startup():
     init_db()
     try:
@@ -139,6 +164,8 @@ def _startup():
     except Exception:
         log.exception("start-up clean-up failed")
     mailer.start_background_sender()
+    if os.environ.get("AHEAD_WARM_UP", "1") != "0":
+        threading.Thread(target=_warm_up, name="ahead-warm-up", daemon=True).start()
 
 
 _startup()

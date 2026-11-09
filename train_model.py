@@ -688,6 +688,11 @@ if __name__ == "__main__":
         json.dump(metadata, file, indent=2)
     print(f"\nMetadata saved -> {metadata_path}")
 
+    # The screening form's statistics, so the app never parses the full datasets to draw a form.
+    from ahead.resources import SUMMARY_FILE, build_summary_file
+    build_summary_file()
+    print(f"Form statistics saved -> {SUMMARY_FILE}")
+
     # =========================================================================
     # Final summary
     # =========================================================================

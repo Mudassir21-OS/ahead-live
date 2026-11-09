@@ -20,6 +20,7 @@ import os
 import re
 import sqlite3
 import threading
+import time
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -199,6 +200,26 @@ _pools = {}
 _pool_lock = threading.Lock()
 
 
+# Checking a connection costs a round trip to Neon. A connection handed back in the last 30 s is still
+# open (Neon only drops idle ones after minutes), so only older ones are checked before use.
+_RECENT_SECONDS = 30
+_last_used = {}
+
+
+def _mark_used(conn):
+    now = time.monotonic()
+    if len(_last_used) > 200:   # connections are replaced every few minutes; forget the old ones
+        for key in [k for k, used in _last_used.items() if now - used > 600]:
+            _last_used.pop(key, None)
+    _last_used[id(conn)] = now
+
+
+def _check_if_idle(conn):
+    if time.monotonic() - _last_used.get(id(conn), float("-inf")) < _RECENT_SECONDS and not conn.closed:
+        return
+    ConnectionPool.check_connection(conn)
+
+
 def _pool():
     url = database_url()
     with _pool_lock:
@@ -208,7 +229,7 @@ def _pool():
                 raise RuntimeError("DATABASE_URL is set but psycopg is not installed (pip install -r requirements.txt).")
             pool = ConnectionPool(
                 url, min_size=1, max_size=int(os.environ.get("AHEAD_DB_POOL_SIZE", "5")), timeout=20,
-                max_idle=120, open=True, check=ConnectionPool.check_connection, name="ahead",
+                max_idle=120, open=True, check=_check_if_idle, reset=_mark_used, name="ahead",
                 kwargs={"cursor_factory": psycopg.ClientCursor, "row_factory": _row_factory,
                         "options": "-c statement_timeout=20000 -c timezone=UTC"},
             )

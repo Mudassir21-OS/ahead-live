@@ -307,8 +307,12 @@ def render_assistant() -> None:
         st.html(
             f"""
 <style>
-[data-testid="stAppViewContainer"] {{
-    background: url("{static_url('chatbot_bg.png')}") center / cover no-repeat fixed !important;
+/* A fixed layer instead of `background-attachment: fixed` (repainted on every scroll). `isolation` keeps the
+   layer above the app's page colour but under the content. */
+[data-testid="stAppViewContainer"] {{ background: transparent !important; isolation: isolate; }}
+[data-testid="stAppViewContainer"]::before {{
+    content: ""; position: fixed; inset: 0; z-index: -1; pointer-events: none;
+    background: url("{static_url('chatbot_bg.webp')}") center / cover no-repeat;
 }}
 [data-testid="stMain"] {{ background: transparent !important; }}
 [data-testid="stBottomBlockContainer"] {{ background: transparent !important; }}

@@ -751,5 +751,12 @@ def render_doctor_intelligence():
     # tabs first appear (the doctor home always opens this page afresh) and keeps the open tab on later runs; the
     # slot above always holds one element so the tabs never move and remount on the next run.
     tabs=st.tabs(TABS,default=tab)
-    for tab,func in zip(tabs,[_overview,_disease,_records,_medication,_prevention,_insights]):
-        with tab:func(doctor)
+    for tab,name in zip(tabs,['_overview','_disease','_records','_medication','_prevention','_insights']):
+        with tab:_tab(name,doctor)
+
+
+@st.fragment
+def _tab(name,doctor):
+    """Each tab is a fragment: a widget in one tab reruns only that tab, not all six with their charts.
+    Saving a plan still reruns the whole page (st.rerun), so the other tabs' counts stay current."""
+    globals()[name](doctor)

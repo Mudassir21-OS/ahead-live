@@ -13,6 +13,7 @@ lives in the ``ahead`` package:
     ahead/pages/         one module per page
 """
 
+import time
 from html import escape
 from pathlib import Path
 
@@ -130,7 +131,12 @@ with st.sidebar:
     with st.container(key="sidebar_nav"):
         unread = 0
         if not user['is_doctor'] and not user['is_admin']:
-            refresh_patient_notifications(st.session_state.user['id'])
+            # Reminders are checked at most once a minute here (each check is ~10 queries, and this runs on
+            # every click); the Notifications and My plan pages still check each time they open.
+            now = time.monotonic()
+            if now - st.session_state.get("reminders_checked_at", -1e9) >= 60:
+                refresh_patient_notifications(st.session_state.user['id'])
+                st.session_state.reminders_checked_at = now
             unread=sum(not n['read_at'] for n in notifications(st.session_state.user['id']))
         previous_group = None
         for key, label, _icon, _doctor_only in visible_nav:
@@ -147,6 +153,14 @@ with st.sidebar:
                 go_to(key)
 
     st.html(sidebar_dynamic_css(active))
+
+    if closes := st.session_state.pop("close_menu", 0):
+        # After choosing a page on a phone-sized screen, fold the menu away as if the person tapped outside it
+        # (Streamlit leaves it open over the page). The count makes each script new, so it runs every time.
+        st.html("<script>/* close menu %d */ if (window.matchMedia('(max-width: 768px)').matches) {"
+                "const b = document.querySelector('[data-testid=stSidebarCollapseButton] button');"
+                "if (b && b.getAttribute('aria-expanded') === 'true') b.click(); }</script>" % closes,
+                unsafe_allow_javascript=True)
 
     with st.container(key="sidebar_bottom"):
         st.html(

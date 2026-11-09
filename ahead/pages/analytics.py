@@ -13,7 +13,7 @@ import streamlit as st
 from ahead.components import page_header, section_heading
 from ahead.config import DISEASES, model_label, pretty_label
 from ahead.resources import best_model, features, final_metrics, load_dataset, meta, validation_results
-from ahead.theme import show_chart, style_figure, tokens
+from ahead.theme import appearance_mode, show_chart, style_figure, tokens
 from ahead.visuals import summary_tile
 
 # What a positive training label means, in plain words (models/model_meta.json has the full definitions).
@@ -36,7 +36,13 @@ METRIC_COLUMNS = {
 }
 
 
-def _target_figure(dataset: pd.DataFrame, target: str, disease: str) -> go.Figure:
+# Figures are cached per disease (and appearance, which changes their colours): building one costs
+# ~0.1 s of CPU, about 2 s on Render's free 0.1 CPU, and this page has twelve. cache_resource shares one
+# figure object instead of copying it (a copy re-validates the whole figure); nothing changes a figure after
+# it is built, so sharing is safe.
+@st.cache_resource(show_spinner=False, max_entries=64)
+def _target_figure(disease: str, mode: str) -> go.Figure:
+    dataset, target = load_dataset(disease), DISEASES[disease]["target"]
     # Targets are stored as 0/1 or No/Yes; either way the positive class is the training label (OUTCOMES).
     has = dataset[target].astype(str).isin(["1", "Yes"])
     negative, positive, _ = OUTCOMES[disease]
@@ -61,7 +67,8 @@ def _feature_distribution(disease: str, feature: str) -> pd.DataFrame:
     return counts
 
 
-def _feature_figure(disease: str, feature: str) -> go.Figure:
+@st.cache_resource(show_spinner=False, max_entries=128)
+def _feature_figure(disease: str, feature: str, mode: str) -> go.Figure:
     frame = _feature_distribution(disease, feature)
     title = pretty_label(feature)
     if "width" in frame.columns:
@@ -76,8 +83,10 @@ def _feature_figure(disease: str, feature: str) -> go.Figure:
     return figure
 
 
-def _threshold_figure(rows: list, chosen: float) -> go.Figure:
-    frame = pd.DataFrame(rows)
+@st.cache_resource(show_spinner=False, max_entries=16)
+def _threshold_figure(disease: str, mode: str) -> go.Figure:
+    details = meta(disease)
+    frame, chosen = pd.DataFrame(details["threshold_results"]), float(details.get("decision_threshold", 0.5))
     t = tokens()
     figure = go.Figure()
     lines = [("recall", "Recall (cases caught)", t["accent"], "solid"), ("precision", "Precision", "#8E7CC3", "solid")]
@@ -119,14 +128,23 @@ def _model_comparison(disease: str) -> None:
     numeric = [c for c in frame.columns if c not in {"Algorithm", "Recommended"}]
     frame[numeric] = frame[numeric].astype(float).round(4)
     st.dataframe(frame, width="stretch", hide_index=True)
+    show_chart(_comparison_figure(disease, appearance_mode()))
+
+
+@st.cache_resource(show_spinner=False, max_entries=16)
+def _comparison_figure(disease: str, mode: str) -> go.Figure:
+    frame = pd.DataFrame(validation_results(disease))
+    frame = frame[[c for c in METRIC_COLUMNS if c in frame.columns]].rename(columns=METRIC_COLUMNS)
+    recommended = best_model(disease)
     metric = meta(disease).get("selection_metric", "macro_f1")
     label = METRIC_COLUMNS.get(metric, metric)
+    frame[label] = frame[label].astype(float).round(4)
     ranked = frame.sort_values(label, ascending=True)
     chart = px.bar(ranked, x=label, y="Algorithm", orientation="h", title=f"Selection metric — {label}")
     chart.update_traces(marker_color=[tokens()["accent"] if n == recommended else "#9DB6C6" for n in ranked["Algorithm"]])
     style_figure(chart, height=300)
     chart.update_layout(yaxis_title="")
-    show_chart(chart)
+    return chart
 
 
 def render_analytics() -> None:
@@ -136,69 +154,76 @@ def render_analytics() -> None:
     )
 
     tabs = st.tabs([info["label"] for info in DISEASES.values()])
-    for tab, (disease, info) in zip(tabs, DISEASES.items()):
+    for tab, disease in zip(tabs, DISEASES):
         with tab:
-            dataset = load_dataset(disease)
-            target = info["target"]
-            model_features = features(disease)
-            details = meta(disease)
+            _disease_tab(disease)
 
-            positive = details.get("positive_cases", 0)
-            share = 100 * positive / max(details.get("n_samples", 1), 1)
-            tiles = [("records", "Records", f"{len(dataset):,}", "Rows in the reference dataset", "#0E9AA7", "uploads"),
-                     ("positive", "Positive cases", f"{positive:,}", f"{share:.1f}% {OUTCOMES[disease][2]}", "#C9706E", "flagged"),
-                     ("features", "Model features", len(model_features), "Answers the model reads", "#8E7CC3", "review"),
-                     # Spaced model names wrap between words instead of being cut off in a narrow card.
-                     ("model", "Recommended model", model_label(best_model(disease)),
-                      "Chosen on the validation results", "#2E9477", "scored")]
-            for column, (key, label, value, note, colour, icon) in zip(st.columns(4), tiles):
-                with column:
-                    summary_tile(f"analytics_{disease}_{key}", label, value, note, colour, icon)
 
-            # Where the data comes from and what the label means, in the training script's own words.
-            st.caption(" ".join(text for text in (
-                f"Source: {details['data_source']}" if details.get("data_source") else "",
-                f"Label: {details['label_definition']}" if details.get("label_definition") else "",
-                f"Population: {details['population']}" if details.get("population") else "",
-                details.get("split", {}).get("method", "")) if text) + " docs/data_sources.md describes how the "
-                "data was checked and its limitations.")
-            section_heading("Explore the data", "How many records have the positive training label, and how each model input is spread across the dataset.")
-            # The picker gets its own row above the charts, so both charts start at the same height.
-            selected_feature = st.columns(2)[0].selectbox(
-                "Input to explore", model_features, format_func=pretty_label, key=f"explorer_{disease}",
-            )
-            left, right = st.columns(2)
-            with left:
-                show_chart(_target_figure(dataset, target, disease))
-            with right:
-                show_chart(_feature_figure(disease, selected_feature))
+@st.fragment
+def _disease_tab(disease: str) -> None:
+    """One disease's tab. A fragment, so picking another input reruns only this tab, not the whole page."""
+    info, mode = DISEASES[disease], appearance_mode()
+    dataset = load_dataset(disease)
+    target = info["target"]
+    model_features = features(disease)
+    details = meta(disease)
 
-            # ------------------------------------------------------------ final test metrics
-            section_heading("Final Model Performance", "Measured once on the untouched test set with the recommended model.")
-            metrics = final_metrics(disease)
-            auc = metrics.get("roc_auc")
-            scores = [("accuracy", "Accuracy", f"{metrics.get('accuracy', 0) * 100:.2f}%", "Test records classified correctly", "#0E9AA7", "goals"),
-                      ("recall", "Disease recall", f"{metrics.get('recall_disease', 0) * 100:.2f}%", "People with the condition the model flags", "#C9706E", "flagged"),
-                      ("f1", "Disease F1", f"{metrics.get('f1_disease', 0):.4f}", "Balance of precision and recall", "#8E7CC3", "scored"),
-                      ("macro_f1", "Macro-F1", f"{metrics.get('macro_f1', 0):.4f}", "F1 averaged over both outcomes", "#C98F1E", "review"),
-                      ("auc", "ROC-AUC", f"{auc:.4f}" if auc is not None else "N/A", "How well scores rank cases first", "#2E9477", "activity")]
-            for column, (key, label, value, note, colour, icon) in zip(st.columns(5), scores):
-                with column:
-                    summary_tile(f"analytics_{disease}_{key}", label, value, note, colour, icon)
-            threshold = float(details.get("decision_threshold", 0.5))
-            selection = METRIC_COLUMNS.get(details.get("selection_metric", ""), details.get("selection_metric", ""))
-            st.caption(f"The recommended model flags a result when its score reaches {threshold:.0%}. "
-                       + (details["selection_rule"] if details.get("selection_rule") else
-                          f"It was picked from the model families by {selection} on the validation split."))
+    positive = details.get("positive_cases", 0)
+    share = 100 * positive / max(details.get("n_samples", 1), 1)
+    tiles = [("records", "Records", f"{len(dataset):,}", "Rows in the reference dataset", "#0E9AA7", "uploads"),
+             ("positive", "Positive cases", f"{positive:,}", f"{share:.1f}% {OUTCOMES[disease][2]}", "#C9706E", "flagged"),
+             ("features", "Model features", len(model_features), "Answers the model reads", "#8E7CC3", "review"),
+             # Spaced model names wrap between words instead of being cut off in a narrow card.
+             ("model", "Recommended model", model_label(best_model(disease)),
+              "Chosen on the validation results", "#2E9477", "scored")]
+    for column, (key, label, value, note, colour, icon) in zip(st.columns(4), tiles):
+        with column:
+            summary_tile(f"analytics_{disease}_{key}", label, value, note, colour, icon)
 
-            if details.get("threshold_results"):
-                show_chart(_threshold_figure(details["threshold_results"], threshold))
-                st.caption(f"A higher threshold flags fewer people: precision and specificity rise and recall falls. "
-                           f"{threshold:.0%} is where recall plus specificity (Youden's J) peaks on the validation split, "
-                           "so missed cases and false alarms count the same.")
+    # Where the data comes from and what the label means, in the training script's own words.
+    st.caption(" ".join(text for text in (
+        f"Source: {details['data_source']}" if details.get("data_source") else "",
+        f"Label: {details['label_definition']}" if details.get("label_definition") else "",
+        f"Population: {details['population']}" if details.get("population") else "",
+        details.get("split", {}).get("method", "")) if text) + " docs/data_sources.md describes how the "
+        "data was checked and its limitations.")
+    section_heading("Explore the data", "How many records have the positive training label, and how each model input is spread across the dataset.")
+    # The picker gets its own row above the charts, so both charts start at the same height.
+    selected_feature = st.columns(2)[0].selectbox(
+        "Input to explore", model_features, format_func=pretty_label, key=f"explorer_{disease}",
+    )
+    left, right = st.columns(2)
+    with left:
+        show_chart(_target_figure(disease, mode))
+    with right:
+        show_chart(_feature_figure(disease, selected_feature, mode))
 
-            _model_comparison(disease)
+    # ------------------------------------------------------------ final test metrics
+    section_heading("Final Model Performance", "Measured once on the untouched test set with the recommended model.")
+    metrics = final_metrics(disease)
+    auc = metrics.get("roc_auc")
+    scores = [("accuracy", "Accuracy", f"{metrics.get('accuracy', 0) * 100:.2f}%", "Test records classified correctly", "#0E9AA7", "goals"),
+              ("recall", "Disease recall", f"{metrics.get('recall_disease', 0) * 100:.2f}%", "People with the condition the model flags", "#C9706E", "flagged"),
+              ("f1", "Disease F1", f"{metrics.get('f1_disease', 0):.4f}", "Balance of precision and recall", "#8E7CC3", "scored"),
+              ("macro_f1", "Macro-F1", f"{metrics.get('macro_f1', 0):.4f}", "F1 averaged over both outcomes", "#C98F1E", "review"),
+              ("auc", "ROC-AUC", f"{auc:.4f}" if auc is not None else "N/A", "How well scores rank cases first", "#2E9477", "activity")]
+    for column, (key, label, value, note, colour, icon) in zip(st.columns(5), scores):
+        with column:
+            summary_tile(f"analytics_{disease}_{key}", label, value, note, colour, icon)
+    threshold = float(details.get("decision_threshold", 0.5))
+    selection = METRIC_COLUMNS.get(details.get("selection_metric", ""), details.get("selection_metric", ""))
+    st.caption(f"The recommended model flags a result when its score reaches {threshold:.0%}. "
+               + (details["selection_rule"] if details.get("selection_rule") else
+                  f"It was picked from the model families by {selection} on the validation split."))
 
-            with st.expander("View sample records"):
-                preview = [c for c in model_features + [target] if c in dataset.columns]
-                st.dataframe(dataset[preview].head(50), width="stretch")
+    if details.get("threshold_results"):
+        show_chart(_threshold_figure(disease, mode))
+        st.caption(f"A higher threshold flags fewer people: precision and specificity rise and recall falls. "
+                   f"{threshold:.0%} is where recall plus specificity (Youden's J) peaks on the validation split, "
+                   "so missed cases and false alarms count the same.")
+
+    _model_comparison(disease)
+
+    with st.expander("View sample records"):
+        preview = [c for c in model_features + [target] if c in dataset.columns]
+        st.dataframe(dataset[preview].head(50), width="stretch")

@@ -264,6 +264,10 @@ For each disease `train_model.py`:
 6. reports final metrics and a calibration check once on the untouched test set and writes
    `models/model_meta.json` (including the data source, label definition, population and split).
 
+It also writes `models/feature_summary.json`: the small per-input statistics the screening form needs, so the
+app never parses the full datasets (heart.csv is 82 MB) just to draw a form. After changing a dataset without
+retraining, run `python scripts/build_feature_summary.py`; a test fails if the file no longer matches.
+
 `scripts/missing_inputs.py` measures every saved model with each allowed pattern of optional model inputs
 left blank and writes `models/missing_inputs.json`. No current model has optional model inputs, so the file
 lists none.
@@ -315,6 +319,11 @@ The live site runs on **Render** (web service, free plan, Frankfurt) with **Neon
 5. Migrations run on every start. Before a deploy that adds a migration, create a Neon backup branch.
 
 Health check: `GET /healthz` returns `{"status": "ok", "database": "ok"}`.
+
+Speed on the free plan (0.1 CPU): at start-up the server loads the recommended models in the background
+(`AHEAD_WARM_UP=0` turns this off), so the first screening doesn't wait for them. The Analytics charts are
+cached, and its disease tabs and the doctor Intelligence tabs are fragments: a widget there reruns only its
+own tab. Patient reminder checks in the menu run at most once a minute.
 
 ---
 

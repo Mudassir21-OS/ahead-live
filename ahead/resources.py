@@ -19,6 +19,8 @@ from ahead.config import (
     ASSETS_DIR, DATA_DIR, DISEASES, FORM_FIELD_SPECS, GEMINI_MODEL, GEMINI_FAST_MODEL, ICONS_DIR, MODELS_DIR, form_fields,
 )
 
+log = logging.getLogger(__name__)
+
 
 # =============================================================================
 # METADATA & DATASETS
@@ -45,8 +47,11 @@ def load_dataset(disease: str) -> pd.DataFrame:
     return frame
 
 
-@st.cache_data(show_spinner=False)
-def feature_summary(disease: str) -> dict:
+SUMMARY_FILE = MODELS_DIR / "feature_summary.json"
+
+
+def compute_feature_summary(disease: str) -> dict:
+    """The form statistics worked out from the full dataset (slow for heart.csv on a small server)."""
     """
     Small per-feature statistics used to build the screening form, so the form
     never has to touch the full dataset on a rerun, for every model input and
@@ -84,6 +89,52 @@ def feature_summary(disease: str) -> dict:
                 "mode": int(series.mode().iloc[0]) if unique.issubset({0, 1}) and not series.empty else None,
             }
     return summary
+
+
+def dataset_fingerprint(disease: str) -> int:
+    """The dataset file's size: enough to notice that a saved summary belongs to a different file."""
+    return (DATA_DIR / DISEASES[disease]["dataset"]).stat().st_size
+
+
+def build_summary_file() -> dict:
+    """Write models/feature_summary.json (run by train_model.py and scripts/build_feature_summary.py)."""
+    saved = {}
+    for disease in DISEASES:
+        specs = FORM_FIELD_SPECS.get(disease, {})
+        fields = {k: v for k, v in compute_feature_summary(disease).items() if k not in specs}
+        saved[disease] = {"dataset_bytes": dataset_fingerprint(disease), "fields": fields}
+    SUMMARY_FILE.write_text(json.dumps(saved, indent=1, sort_keys=True))
+    return saved
+
+
+def _saved_summary(disease: str) -> dict | None:
+    try:
+        entry = json.loads(SUMMARY_FILE.read_text())[disease]
+        if entry["dataset_bytes"] != dataset_fingerprint(disease):
+            log.warning("feature_summary.json is out of date for %s; using the dataset instead.", disease)
+            return None
+    except (OSError, ValueError, KeyError):
+        return None
+    specs = FORM_FIELD_SPECS.get(disease, {})
+    fields, summary = entry["fields"], {}
+    for feature in dict.fromkeys(features(disease) + form_fields(disease)):
+        if feature in specs:
+            summary[feature] = dict(specs[feature])
+        elif feature in fields:
+            summary[feature] = fields[feature]
+        else:
+            return None     # a field the saved file doesn't know about: work it out properly
+    return summary
+
+
+@st.cache_data(show_spinner=False)
+def feature_summary(disease: str) -> dict:
+    """
+    Small per-feature statistics used to build the screening form (see compute_feature_summary).
+    They are read from models/feature_summary.json when it matches the dataset, so a screening
+    never waits for the full dataset (heart.csv is 82 MB) to be parsed on a small server.
+    """
+    return _saved_summary(disease) or compute_feature_summary(disease)
 
 
 def meta(disease: str) -> dict:
@@ -217,6 +268,20 @@ def load_pipeline(disease: str, model_name: str):
             with open(path, "rb") as file:
                 return pickle.load(file)
     return None
+
+
+def warm_up() -> None:
+    """Load what the first screening needs before anyone asks for it.
+
+    On Render's free plan (0.1 CPU) the first "Loading model…" took about 30 s: almost all of it was
+    importing scikit-learn while unpickling the model, plus the screening form's statistics. The server
+    calls this in a background thread at start-up; the caches are shared by every session.
+    """
+    import plotly.express  # noqa: F401  (charts on the first dashboard)
+    load_metadata()
+    for disease in DISEASES:
+        feature_summary(disease)
+        load_pipeline(disease, best_model(disease))
 
 
 def predict_probability(pipeline, frame: pd.DataFrame) -> pd.Series:

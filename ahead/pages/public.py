@@ -11,6 +11,7 @@ import os
 import streamlit as st
 
 from ahead import accounts, mailer
+from ahead.components import username_hint
 from ahead.config import BASE, ROLE_ADMIN, ROLE_DOCTOR, ROLE_PATIENT
 from ahead.resources import icon_uri, image_data_uri, static_url
 from ahead.session import begin, request_ip
@@ -29,10 +30,15 @@ def _public_chrome(active: str) -> None:
         f"""
 <style>
 {_login_css()}
-html, body, .stApp, [data-testid="stAppViewContainer"] {{
+html, body {{ background: #EEF5F9 !important; }}
+.stApp, [data-testid="stAppViewContainer"] {{ background: transparent !important; }}
+/* One fixed layer for the picture instead of `background-attachment: fixed`, which made the browser
+   repaint the whole 1.2 MB image on every scroll step. The image is now a 23 KB WebP. */
+.stApp::before {{
+    content: ""; position: fixed; inset: 0; z-index: -1; pointer-events: none;
     background:
         linear-gradient(rgba(241,248,251,0.38), rgba(241,248,251,0.38)),
-        url("{static_url('login_bg.png')}") center / cover no-repeat fixed !important;
+        url("{static_url('login_bg.webp')}") center / cover no-repeat;
 }}
 </style>
 """
@@ -208,7 +214,8 @@ def render_login() -> None:
                 if mailer.enabled():
                     with st.expander("Forgot your password?"):
                         with st.form("forgot_password", clear_on_submit=True):
-                            forgot_email = st.text_input("Your account email", max_chars=254, key="forgot_email")
+                            forgot_email = st.text_input("Your account email", max_chars=254, key="forgot_email",
+                                                         autocomplete="username")
                             if st.form_submit_button("Email me a reset link"):
                                 accounts.request_password_reset(forgot_email, request_ip())
                                 st.session_state.forgot_sent = True
@@ -221,9 +228,10 @@ def render_login() -> None:
                 with st.expander("Create a patient account"):
                     with st.form("patient_registration"):
                         name = st.text_input("Your full name", max_chars=120)
-                        new_email = st.text_input("Your email", max_chars=254)
-                        new_password = st.text_input(f"Choose a password ({MIN_PASSWORD}+ characters)", type="password")
-                        confirm = st.text_input("Type the password again", type="password")
+                        new_email = st.text_input("Your email", max_chars=254, autocomplete="username")
+                        new_password = st.text_input(f"Choose a password ({MIN_PASSWORD}+ characters)", type="password",
+                                                     autocomplete="new-password")
+                        confirm = st.text_input("Type the password again", type="password", autocomplete="new-password")
                         if st.form_submit_button("Create account"):
                             ok, message = _register(name, new_email, new_password, confirm)
                             (st.success if ok else st.error)(message)
@@ -357,6 +365,7 @@ def render_account_link(token: str) -> None:
             st.html(f'<div class="login-heading"><h2>{escape(title)}</h2>'
                     f'<p>{escape(user["name"])} · {escape(user["email"])}</p></div>')
             with st.form("account_link_form", border=False):
+                username_hint(user["email"])
                 password = st.text_input(f"New password ({MIN_PASSWORD}+ characters)", type="password",
                                          autocomplete="new-password")
                 confirm = st.text_input("Type it again", type="password", autocomplete="new-password")

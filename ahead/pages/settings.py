@@ -9,7 +9,7 @@ from html import escape
 
 import streamlit as st
 
-from ahead.components import current_user, go_to, logout, markdown_literal, pref, page_header
+from ahead.components import current_user, go_to, logout, markdown_literal, pref, page_header, username_hint
 from ahead.theme import APPEARANCE_OPTIONS, appearance_mode
 from ahead import accounts
 from ahead.session import request_ip
@@ -219,9 +219,10 @@ def _account_tab(user: dict) -> None:
 
     with st.expander("🔒  Change password — update your password regularly"):
         with st.form("settings_password_form"):
-            current_pw = st.text_input("Current password", type="password")
-            new_pw = st.text_input("New password", type="password")
-            confirm_pw = st.text_input("Confirm new password", type="password")
+            username_hint(user["email"])
+            current_pw = st.text_input("Current password", type="password", autocomplete="current-password")
+            new_pw = st.text_input("New password", type="password", autocomplete="new-password")
+            confirm_pw = st.text_input("Confirm new password", type="password", autocomplete="new-password")
             if st.form_submit_button("Update password", type="primary"):
                 if not current_pw or not new_pw:
                     st.error("Please fill in every field.")

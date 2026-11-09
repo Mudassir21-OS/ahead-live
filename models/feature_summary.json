@@ -1,0 +1,299 @@
+{
+ "diabetes": {
+  "dataset_bytes": 1776530,
+  "fields": {
+   "age": {
+    "binary": false,
+    "integer": true,
+    "kind": "number",
+    "max": 85.0,
+    "median": 44.0,
+    "min": 18.0,
+    "mode": null
+   },
+   "bmi": {
+    "binary": false,
+    "integer": false,
+    "kind": "number",
+    "max": 86.2,
+    "median": 27.3,
+    "min": 11.1,
+    "mode": null
+   },
+   "gender": {
+    "default": "Female",
+    "kind": "category",
+    "options": [
+     "Male",
+     "Female"
+    ]
+   },
+   "heart_disease": {
+    "binary": true,
+    "integer": true,
+    "kind": "number",
+    "max": 1.0,
+    "median": 0.0,
+    "min": 0.0,
+    "mode": 0
+   },
+   "hypertension": {
+    "binary": true,
+    "integer": true,
+    "kind": "number",
+    "max": 1.0,
+    "median": 0.0,
+    "min": 0.0,
+    "mode": 0
+   },
+   "smoked_100": {
+    "binary": true,
+    "integer": true,
+    "kind": "number",
+    "max": 1.0,
+    "median": 0.0,
+    "min": 0.0,
+    "mode": 0
+   }
+  }
+ },
+ "heart": {
+  "dataset_bytes": 81984258,
+  "fields": {
+   "AgeCategory": {
+    "default": "Age 65 to 69",
+    "kind": "category",
+    "options": [
+     "Age 65 to 69",
+     "Age 70 to 74",
+     "Age 75 to 79",
+     "Age 80 or older",
+     "Age 50 to 54",
+     "Age 40 to 44",
+     "Age 60 to 64",
+     "Age 55 to 59",
+     "Age 45 to 49",
+     "Age 35 to 39",
+     "Age 25 to 29",
+     "Age 30 to 34",
+     "Age 18 to 24"
+    ]
+   },
+   "AlcoholDrinkers": {
+    "default": "Yes",
+    "kind": "category",
+    "options": [
+     "No",
+     "Yes"
+    ]
+   },
+   "BMI": {
+    "binary": false,
+    "integer": false,
+    "kind": "number",
+    "max": 97.65,
+    "median": 27.46,
+    "min": 12.02,
+    "mode": null
+   },
+   "GeneralHealth": {
+    "default": "Very good",
+    "kind": "category",
+    "options": [
+     "Very good",
+     "Fair",
+     "Good",
+     "Excellent",
+     "Poor"
+    ]
+   },
+   "HadAngina": {
+    "default": "No",
+    "kind": "category",
+    "options": [
+     "No",
+     "Yes"
+    ]
+   },
+   "HadArthritis": {
+    "default": "No",
+    "kind": "category",
+    "options": [
+     "Yes",
+     "No"
+    ]
+   },
+   "HadAsthma": {
+    "default": "No",
+    "kind": "category",
+    "options": [
+     "No",
+     "Yes"
+    ]
+   },
+   "HadDiabetes": {
+    "default": "No",
+    "kind": "category",
+    "options": [
+     "No",
+     "Yes",
+     "Yes, but only during pregnancy (female)",
+     "No, pre-diabetes or borderline diabetes"
+    ]
+   },
+   "HadHeartAttack": {
+    "default": "No",
+    "kind": "category",
+    "options": [
+     "No",
+     "Yes"
+    ]
+   },
+   "HadKidneyDisease": {
+    "default": "No",
+    "kind": "category",
+    "options": [
+     "No",
+     "Yes"
+    ]
+   },
+   "HadStroke": {
+    "default": "No",
+    "kind": "category",
+    "options": [
+     "No",
+     "Yes"
+    ]
+   },
+   "MentalHealthDays": {
+    "binary": false,
+    "integer": true,
+    "kind": "number",
+    "max": 30.0,
+    "median": 0.0,
+    "min": 0.0,
+    "mode": null
+   },
+   "PhysicalActivities": {
+    "default": "Yes",
+    "kind": "category",
+    "options": [
+     "Yes",
+     "No"
+    ]
+   },
+   "PhysicalHealthDays": {
+    "binary": false,
+    "integer": true,
+    "kind": "number",
+    "max": 30.0,
+    "median": 0.0,
+    "min": 0.0,
+    "mode": null
+   },
+   "Sex": {
+    "default": "Female",
+    "kind": "category",
+    "options": [
+     "Female",
+     "Male"
+    ]
+   },
+   "SleepHours": {
+    "binary": false,
+    "integer": true,
+    "kind": "number",
+    "max": 24.0,
+    "median": 7.0,
+    "min": 1.0,
+    "mode": null
+   },
+   "SmokerStatus": {
+    "default": "Never smoked",
+    "kind": "category",
+    "options": [
+     "Former smoker",
+     "Never smoked",
+     "Current smoker - now smokes every day",
+     "Current smoker - now smokes some days"
+    ]
+   }
+  }
+ },
+ "kidney": {
+  "dataset_bytes": 2213129,
+  "fields": {
+   "age": {
+    "binary": false,
+    "integer": true,
+    "kind": "number",
+    "max": 85.0,
+    "median": 47.0,
+    "min": 18.0,
+    "mode": null
+   },
+   "bmi": {
+    "binary": false,
+    "integer": false,
+    "kind": "number",
+    "max": 86.2,
+    "median": 27.8,
+    "min": 12.04,
+    "mode": null
+   },
+   "diabetes": {
+    "binary": true,
+    "integer": true,
+    "kind": "number",
+    "max": 1.0,
+    "median": 0.0,
+    "min": 0.0,
+    "mode": 0
+   },
+   "gender": {
+    "default": "Female",
+    "kind": "category",
+    "options": [
+     "Male",
+     "Female"
+    ]
+   },
+   "heart_disease": {
+    "binary": true,
+    "integer": true,
+    "kind": "number",
+    "max": 1.0,
+    "median": 0.0,
+    "min": 0.0,
+    "mode": 0
+   },
+   "hypertension": {
+    "binary": true,
+    "integer": true,
+    "kind": "number",
+    "max": 1.0,
+    "median": 0.0,
+    "min": 0.0,
+    "mode": 0
+   },
+   "physically_active": {
+    "binary": true,
+    "integer": true,
+    "kind": "number",
+    "max": 1.0,
+    "median": 1.0,
+    "min": 0.0,
+    "mode": 1
+   },
+   "smoked_100": {
+    "binary": true,
+    "integer": true,
+    "kind": "number",
+    "max": 1.0,
+    "median": 0.0,
+    "min": 0.0,
+    "mode": 0
+   }
+  }
+ }
+}

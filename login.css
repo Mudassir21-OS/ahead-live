@@ -34,13 +34,12 @@
 
 /* ---------------- LOGIN CARD ---------------- */
 .st-key-login_shell {
-    background: rgba(255,255,255,0.84) !important;
+    /* no backdrop blur: blurring the moving background on every scroll frame was the main scroll cost */
+    background: rgba(255,255,255,0.9) !important;
     border: 1px solid rgba(214,226,234,0.85);
     border-radius: 25px;
     box-shadow: 0 24px 65px rgba(22,55,77,0.15);
     overflow: hidden;
-    backdrop-filter: blur(9px);
-    -webkit-backdrop-filter: blur(9px);
     padding: 0 !important;
 }
 .st-key-login_shell [data-testid="stHorizontalBlock"] { gap: 0 !important; }
@@ -143,9 +142,11 @@
 .st-key-login_form div[data-baseweb="base-input"] { background: transparent !important; border: none !important; }
 .st-key-login_form div[data-baseweb="input"] [data-testid="stTextInputRootElement"] { border: none !important; background-image: none !important; background-color: transparent !important; }
 .st-key-login_form [data-testid="stTextInput"] input {
-    min-height: 50px !important; padding-left: 52px !important; background: transparent !important; border: none !important;
+    min-height: 50px !important; padding-left: 14px !important; background: transparent !important; border: none !important;
     outline: none !important; box-shadow: none !important; color: #173A5E !important; font-size: 0.92rem !important;
 }
+/* Only the two sign-in fields have an icon, so only they need room for it. */
+.st-key-login_form .st-key-login_email input, .st-key-login_form .st-key-login_password input { padding-left: 52px !important; }
 .st-key-login_form [data-testid="stTextInput"] input::placeholder { color: #8196B2 !important; opacity: 1 !important; }
 .st-key-login_email [data-testid="stTextInputRootElement"] {
     background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24' fill='none' stroke='%231B4777' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect x='3' y='5' width='18' height='14' rx='2'/%3E%3Cpath d='m3 7 9 6 9-6'/%3E%3C/svg%3E") !important;

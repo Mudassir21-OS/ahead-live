@@ -60,6 +60,9 @@ def go_to(nav_key: str, screening: str | None = None, keep_screening: bool = Fal
     st.session_state.nav = nav_key
     if not keep_screening:
         st.session_state.active_screening = screening
+    # On a phone the menu covers the page; close it once the new page is open (app.py).
+    st.session_state.close_menu = st.session_state.get("menu_seq", 0) + 1
+    st.session_state.menu_seq = st.session_state.close_menu
     st.rerun()
 
 
@@ -151,6 +154,19 @@ def section_heading(title: str, subtitle: str = "") -> None:
 def markdown_literal(text: str) -> str:
     """Escape Markdown punctuation so user text (names, uploaded IDs) shows literally in Markdown and widget labels."""
     return re.sub(r"([!-/:-@\[-`{-~])", r"\\\1", str(text))
+
+
+def username_hint(email: str) -> None:
+    """A hidden username field for password managers on forms that only ask for passwords.
+
+    Without it Chrome guesses which saved account the new password belongs to (and once
+    offered a stranger's saved login). With it, the password is saved against this email.
+    """
+    st.html(
+        '<input type="email" name="username" autocomplete="username" class="ahead-username-hint" '
+        f'value="{escape(email or "", quote=True)}" readonly tabindex="-1" aria-hidden="true" '
+        'style="position:absolute;width:1px;height:1px;opacity:0;pointer-events:none;border:0;padding:0">'
+    )
 
 
 def disclaimer(text: str = DISCLAIMER_TEXT, label: str = "Medical disclaimer") -> None:
