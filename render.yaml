@@ -19,6 +19,10 @@ services:
         sync: false
       - key: AHEAD_PUBLIC_URL      # e.g. https://ahead.onrender.com (set after the first deploy; used in links)
         sync: false
+      - key: BREVO_API_KEY         # optional: turns on account emails (confirm, reset, set-up, notices)
+        sync: false
+      - key: AHEAD_EMAIL_FROM      # sender verified in Brevo (default aurak.events.noreply@gmail.com)
+        sync: false
       - key: AHEAD_TRUST_PROXY     # proxy hops in front of the app on Render, for real visitor addresses
         value: "3"
       - key: AHEAD_DB_POOL_SIZE

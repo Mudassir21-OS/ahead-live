@@ -4,13 +4,10 @@ Admins manage who can sign in. They never see screenings, records, plans or any 
 (least access: a stolen admin password exposes accounts, not medical information).
 """
 
-import os
-from urllib.parse import urlsplit
-
 import pandas as pd
 import streamlit as st
 
-from ahead import accounts
+from ahead import accounts, mailer
 from ahead.components import page_header
 from ahead.config import ROLE_ADMIN, ROLE_DOCTOR, ROLE_PATIENT
 from ahead.platform_data import to_local
@@ -24,19 +21,12 @@ ACTION_LABELS = {
     "account_deactivated": "Account deactivated", "account_reactivated": "Account reactivated",
     "reset_link_created": "Reset link created", "setup_link_created": "Set-up link created",
     "password_set_from_link": "Password set from a link", "password_changed": "Password changed",
-    "signed_out_everywhere": "Signed out everywhere",
+    "signed_out_everywhere": "Signed out everywhere", "email_verified": "Email confirmed",
+    "reset_requested": "Password reset requested", "email_changed": "Email address changed",
 }
-
-
-def _site_url():
-    configured = os.environ.get("AHEAD_PUBLIC_URL", "").strip().rstrip("/")
-    if configured:
-        return configured
-    try:
-        parts = urlsplit(st.context.url)
-        return f"{parts.scheme}://{parts.netloc}"
-    except Exception:
-        return ""
+EMAIL_LABELS = {"verify": "Confirm email", "reset": "Password reset", "setup": "Account set-up",
+                "password_changed": "Password changed notice", "email_changed": "Email changed notice",
+                "deactivated": "Account switched off", "reactivated": "Account switched on"}
 
 
 def _when(stamp):
@@ -45,9 +35,10 @@ def _when(stamp):
 
 def _show_link(kind, token):
     st.success(f"{kind} link created. Copy it now: it is shown only once.")
-    st.code(f"{_site_url()}/?{'setup' if kind == 'Set-up' else 'reset'}={token}", language=None)
-    st.caption("Send it to the person yourself for now (automatic emails come in the next update). "
-               + ("It works once and expires in 3 days." if kind == "Set-up" else "It works once and expires in 60 minutes."))
+    st.code(f"{accounts.site_url()}/?{'setup' if kind == 'Set-up' else 'reset'}={token}", language=None)
+    sent = ("AHEAD has also emailed it to them (see the Emails tab). Pass it on yourself if the email doesn't arrive. "
+            if mailer.enabled() else "Send it to the person yourself (emails are not switched on). ")
+    st.caption(sent + ("It works once and expires in 3 days." if kind == "Set-up" else "It works once and expires in 60 minutes."))
 
 
 def render_admin():
@@ -63,8 +54,9 @@ def render_admin():
 
     # A keyed tab set keeps the chosen tab after a button press (so a new set-up link stays on screen),
     # and only the open tab's content runs.
-    tabs = st.tabs(["Accounts", "Add a doctor or admin", "Audit log", "My password"], key="admin_tabs", on_change="rerun")
-    for tab, draw in zip(tabs, (lambda: _accounts(me), lambda: _add(me), _audit, lambda: _my_password(me))):
+    tabs = st.tabs(["Accounts", "Add a doctor or admin", "Audit log", "Emails", "My password"], key="admin_tabs",
+                   on_change="rerun")
+    for tab, draw in zip(tabs, (lambda: _accounts(me), lambda: _add(me), _audit, _emails, lambda: _my_password(me))):
         if tab.open:
             with tab:
                 draw()
@@ -155,6 +147,27 @@ def _audit():
     st.caption("The latest 200 events. The audit log records account activity only, never health information.")
 
 
+def _emails():
+    if not mailer.enabled():
+        st.info("Emails are switched off. Add BREVO_API_KEY in Render (Environment) to send confirmation, "
+                "password-reset, set-up and account emails.")
+        return
+    a, b = st.columns(2)
+    with a: metric("Sent today", mailer.sent_today(), f"Daily limit {mailer.daily_limit()} (UTC day)", "#0E9AA7", "✉")
+    with b: metric("Sender", mailer.sender()[0].split("@")[0], mailer.sender()[0], "#2563EB", "◎")
+    rows = mailer.recent(100)
+    if not rows:
+        st.info("No emails yet.")
+        return
+    st.dataframe(pd.DataFrame([{
+        "Queued": _when(r["created_at"]), "To": r["to_email"], "Email": EMAIL_LABELS.get(r["kind"], r["kind"]),
+        "Status": r["status"].capitalize(), "Tries": r["attempts"], "Sent": _when(r["sent_at"]),
+        "Problem": r["last_error"][:120] or "—",
+    } for r in rows]), hide_index=True, width="stretch")
+    st.caption("The latest 100 emails. Only who, what kind and whether it went are kept; the text is deleted once sent. "
+               "Emails never contain health information.")
+
+
 def _my_password(me):
     with st.form("admin_password", clear_on_submit=True):
         current = st.text_input("Current password", type="password", autocomplete="current-password")
@@ -172,4 +185,5 @@ def _my_password(me):
             if st.session_state.get("session_id"):
                 accounts.keep_session_after_password_change(st.session_state.session_id, me["id"])
             accounts.audit("password_changed", actor_id=me["id"], target_user_id=me["id"], ip=request_ip())
-            st.success("Password changed. Your other devices were signed out.")
+            accounts.notify(me, "password_changed")
+            st.success("Password changed. Your other devices and tabs were signed out.")

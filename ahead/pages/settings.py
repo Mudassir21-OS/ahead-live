@@ -118,11 +118,15 @@ def _profile_tab(user: dict) -> None:
             elif "@" not in email or "." not in email.split("@")[-1]:
                 st.error("Please enter a valid email address.")
             else:
+                old = {"id": st.session_state.user["id"], "email": user["email"], "name": user["name"]}
                 try:
-                    update_profile(st.session_state.user["id"], full_name, email, institution)
+                    changed = update_profile(st.session_state.user["id"], full_name, email, institution)
                 except Exception:
                     st.error("Unable to save this profile. The email may already be used.")
                 else:
+                    if changed:  # tell the old address, in case someone else made the change
+                        accounts.notify(old, "email_changed")
+                        accounts.audit("email_changed", actor_id=old["id"], target_user_id=old["id"], ip=request_ip())
                     st.session_state.user.update(
                         {"name": full_name.strip(), "email": email.strip().lower(), "institution": institution.strip()}
                     )
@@ -231,12 +235,14 @@ def _account_tab(user: dict) -> None:
                     if st.session_state.get("session_id"):
                         accounts.keep_session_after_password_change(st.session_state.session_id, user["id"])
                     accounts.audit("password_changed", actor_id=user["id"], target_user_id=user["id"], ip=request_ip())
-                    st.success("Password updated. Your other devices were signed out.")
+                    accounts.notify(st.session_state.user, "password_changed")
+                    st.success("Password updated. Your other devices and tabs were signed out.")
 
     with st.expander("🖥  Manage sessions — view and manage active sessions"):
-        st.html(_row("●", "This browser", f"Signed in as {user['email']} · active now"))
-        st.caption("You stay signed in when you reload the page. AHEAD signs you out after 2 hours without "
-                   "activity, and after 12 hours in any case.")
+        st.html(_row("●", "This tab", f"Signed in as {user['email']} · active now"))
+        st.caption("Your sign-in belongs to this browser tab: reloading keeps you signed in, closing the tab signs "
+                   "you out, and a new tab asks you to sign in again. AHEAD also signs you out after 2 hours "
+                   "without activity, and after 12 hours in any case.")
         if st.button("Sign out on all my devices", key="settings_signout_all"):
             accounts.sign_out_everywhere(user["id"])
             accounts.audit("signed_out_everywhere", actor_id=user["id"], target_user_id=user["id"], ip=request_ip())
@@ -246,7 +252,7 @@ def _account_tab(user: dict) -> None:
         """
 <div class="settings-danger">
     <strong>Log out</strong>
-    <p>Sign out of AHEAD on this browser. Your saved history stays in your account.</p>
+    <p>Sign out of AHEAD in this tab. Your saved history stays in your account.</p>
 </div>
 """
     )

@@ -26,14 +26,15 @@ st.set_page_config(
 )
 
 from ahead.components import current_user, go_to, init_state, open_assistant  # noqa: E402
-from ahead.session import browser_scripts, restore, sign_out  # noqa: E402
+from ahead.session import browser_scripts, mount_tab_identity, restore, sign_out  # noqa: E402
 from ahead.config import NAV_ITEMS  # noqa: E402
 from ahead.resources import image_data_uri  # noqa: E402
 from ahead.pages.analytics import render_analytics  # noqa: E402
 from ahead.pages.assistant import render_assistant  # noqa: E402
 from ahead.pages.clinical import render_clinical_dashboard  # noqa: E402
 from ahead.pages.overview import render_overview  # noqa: E402
-from ahead.pages.public import PUBLIC_CONTENT, render_account_link, render_login, render_public_page  # noqa: E402
+from ahead.pages.public import (PUBLIC_CONTENT, render_account_link, render_login, render_public_page,  # noqa: E402
+                                render_tab_wait, render_verify_link)
 from ahead.pages.admin import render_admin  # noqa: E402
 from ahead.pages.screenings import render_screenings  # noqa: E402
 from ahead.pages.settings import render_settings  # noqa: E402
@@ -50,9 +51,15 @@ from ahead.pages.doctor_intelligence import render_doctor_intelligence  # noqa: 
 init_db()
 startup_platform()
 init_state()
-restore()          # a reload signs back in from the session cookie; deactivated accounts are signed out
-browser_scripts()  # sets or clears that cookie after signing in or out
+tab = mount_tab_identity()   # this browser tab's own identity (sessionStorage): sign-ins belong to one tab
+ready = restore(tab)         # a reload of a signed-in tab signs back in; deactivated accounts are signed out
+browser_scripts()            # sets or clears this tab's cookie after signing in or out
 inject_global_css()
+
+if not ready and not st.session_state.get("skip_tab_wait"):
+    apply_theme(force_light=True)
+    render_tab_wait()        # for a moment after a reload, until the tab reports which sign-in is its own
+    st.stop()
 
 # =============================================================================
 # PUBLIC ROUTING  (?page=login|about|contact|help)
@@ -61,6 +68,12 @@ inject_global_css()
 requested = st.query_params.get("page", "login")
 if requested not in PUBLIC_CONTENT:
     requested = "login"
+
+verify_token = st.query_params.get("verify")
+if verify_token and not st.session_state.authenticated:
+    apply_theme(force_light=True)
+    render_verify_link(verify_token)
+    st.stop()
 
 link_token = st.query_params.get("setup") or st.query_params.get("reset")
 if link_token and not st.session_state.authenticated:

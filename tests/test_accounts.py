@@ -12,6 +12,8 @@ from ahead.storage import authenticate, change_password, connection, create_user
 
 APP = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "app.py")
 PW = "safe-password-123"
+TAB = "tab-secret-" + "x" * 32          # what a browser tab keeps in sessionStorage
+TAB_ID = "0123456789abcdef"
 
 
 class Base(unittest.TestCase):
@@ -33,7 +35,7 @@ class Base(unittest.TestCase):
         os.environ.pop("AHEAD_TRUST_PROXY", None)
 
     def session(self, user):
-        session_id, code = accounts.start_session(user["id"], "test-agent", "10.0.0.1")
+        session_id, code = accounts.start_session(user["id"], "test-agent", "10.0.0.1", TAB)
         token, _ = accounts.complete_handoff(code)
         return session_id, token
 
@@ -100,7 +102,7 @@ class SignInTests(Base):
 
 class SessionTests(Base):
     def test_handoff_code_works_once_and_expires(self):
-        _, code = accounts.start_session(self.p["id"])
+        _, code = accounts.start_session(self.p["id"], tab_secret=TAB)
         token, max_age = accounts.complete_handoff(code)
         self.assertTrue(token and 0 < max_age <= accounts.MAX_HOURS * 3600)
         self.assertIsNone(accounts.complete_handoff(code))
@@ -117,13 +119,13 @@ class SessionTests(Base):
 
     def test_valid_session_and_every_way_it_ends(self):
         session_id, token = self.session(self.p)
-        self.assertEqual(accounts.session_user(token)[1]["email"], "p@test.com")
+        self.assertEqual(accounts.session_user(token, TAB)[1]["email"], "p@test.com")
         self.assertEqual(accounts.check_session(session_id)["id"], self.p["id"])
         # deactivation signs out at once, and reactivation doesn't bring old sessions back
         accounts.set_active(self.a["id"], self.p["id"], False)
-        self.assertIsNone(accounts.session_user(token))
+        self.assertIsNone(accounts.session_user(token, TAB))
         accounts.set_active(self.a["id"], self.p["id"], True)
-        self.assertIsNone(accounts.session_user(token))
+        self.assertIsNone(accounts.session_user(token, TAB))
         # sign out one browser
         session_id, token = self.session(self.p)
         accounts.end_session(session_id)
@@ -131,35 +133,35 @@ class SessionTests(Base):
         # idle too long
         session_id, token = self.session(self.p)
         self.shift("sessions", "last_seen_at", timedelta(minutes=accounts.IDLE_MINUTES + 1), "id=?", (session_id,))
-        self.assertIsNone(accounts.session_user(token))
+        self.assertIsNone(accounts.session_user(token, TAB))
         # past the maximum lifetime
         session_id, token = self.session(self.p)
         self.shift("sessions", "expires_at", timedelta(hours=accounts.MAX_HOURS), "id=?", (session_id,))
         self.assertIsNone(accounts.check_session(session_id))
-        self.assertIsNone(accounts.session_user("not-a-token"))
+        self.assertIsNone(accounts.session_user("not-a-token", TAB))
 
     def test_activity_keeps_a_session_alive(self):
         session_id, token = self.session(self.p)
         self.shift("sessions", "last_seen_at", timedelta(minutes=accounts.IDLE_MINUTES - 10), "id=?", (session_id,))
-        self.assertIsNotNone(accounts.session_user(token))  # refreshes last_seen_at
+        self.assertIsNotNone(accounts.session_user(token, TAB))  # refreshes last_seen_at
         self.shift("sessions", "last_seen_at", timedelta(minutes=30), "id=?", (session_id,))
-        self.assertIsNotNone(accounts.session_user(token))
+        self.assertIsNotNone(accounts.session_user(token, TAB))
 
     def test_password_change_signs_out_other_browsers_only(self):
         here, here_token = self.session(self.p)
         there, there_token = self.session(self.p)
         self.assertTrue(change_password(self.p["id"], PW, "another-password-456"))
         accounts.keep_session_after_password_change(here, self.p["id"])
-        self.assertIsNotNone(accounts.session_user(here_token))
-        self.assertIsNone(accounts.session_user(there_token))
+        self.assertIsNotNone(accounts.session_user(here_token, TAB))
+        self.assertIsNone(accounts.session_user(there_token, TAB))
         self.assertFalse(change_password(self.p["id"], "wrong-password!!", "x" * 12))
 
     def test_sign_out_everywhere(self):
         _, one = self.session(self.d)
         _, two = self.session(self.d)
         accounts.sign_out_everywhere(self.d["id"])
-        self.assertIsNone(accounts.session_user(one))
-        self.assertIsNone(accounts.session_user(two))
+        self.assertIsNone(accounts.session_user(one, TAB))
+        self.assertIsNone(accounts.session_user(two, TAB))
 
 
 class LinkAndAdminTests(Base):
@@ -198,7 +200,7 @@ class LinkAndAdminTests(Base):
         _, token = self.session(self.p)
         link = accounts.admin_reset_link(self.a["id"], self.p["id"])
         accounts.use_link(link, "brand-new-password")
-        self.assertIsNone(accounts.session_user(token))
+        self.assertIsNone(accounts.session_user(token, TAB))
         link = accounts.admin_reset_link(self.a["id"], self.p["id"])
         accounts.set_active(self.a["id"], self.p["id"], False)
         self.assertIsNone(accounts.link_account(link))
@@ -277,7 +279,7 @@ class AppPageTests(Base):
         self.assertFalse(at.exception, [e.message for e in at.exception])
         self.assertEqual(self.labels(at), ["Accounts & Security"])
         self.assertEqual(at.session_state.nav, "admin")
-        self.assertEqual([t.label for t in at.tabs], ["Accounts", "Add a doctor or admin", "Audit log", "My password"])
+        self.assertEqual([t.label for t in at.tabs], ["Accounts", "Add a doctor or admin", "Audit log", "Emails", "My password"])
 
     def test_patients_and_doctors_cant_open_the_admin_page(self):
         for user in (self.p, self.d):
@@ -375,23 +377,55 @@ class ServerRouteTests(Base):
         self.assertEqual(response.headers["x-frame-options"], "DENY")
         self.assertIn("max-age", response.headers["strict-transport-security"])
 
-    def test_handoff_sets_an_httponly_strict_cookie_and_logout_clears_it(self):
-        session_id, code = accounts.start_session(self.p["id"])
-        bad = self.client.post("/auth/session", json={"code": code}, headers={"origin": "https://evil.test"})
-        self.assertEqual(bad.status_code, 403)
-        ok = self.client.post("/auth/session", json={"code": code}, headers={"origin": "https://ahead.test"})
+    def setUp(self):
+        super().setUp()
+        self.client.cookies.clear()
+
+    def post(self, path, body, origin="https://ahead.test"):
+        return self.client.post(path, json=body, headers={"origin": origin})
+
+    def test_handoff_sets_an_httponly_strict_cookie_for_this_tab_and_logout_clears_it(self):
+        session_id, code = accounts.start_session(self.p["id"], tab_secret=TAB)
+        self.assertEqual(self.post("/auth/session", {"code": code, "tab": TAB_ID}, "https://evil.test").status_code, 403)
+        self.assertEqual(self.post("/auth/session", {"code": code, "tab": "../etc"}).status_code, 400)
+        ok = self.post("/auth/session", {"code": code, "tab": TAB_ID})
         self.assertEqual(ok.status_code, 204)
         cookie = ok.headers["set-cookie"].lower()
-        for part in ("ahead_session=", "httponly", "samesite=strict", "secure", "path=/"):
+        for part in (f"ahead_s_{TAB_ID}=", "httponly", "samesite=strict", "secure", "path=/"):
             self.assertIn(part, cookie)
-        token = ok.cookies.get("ahead_session") or self.client.cookies.get("ahead_session")
-        self.assertEqual(accounts.session_user(token)[0], session_id)
-        again = self.client.post("/auth/session", json={"code": code}, headers={"origin": "https://ahead.test"})
-        self.assertEqual(again.status_code, 400)
-        out = self.client.post("/auth/logout", headers={"origin": "https://ahead.test"})
+        token = self.client.cookies.get(f"ahead_s_{TAB_ID}")
+        self.assertEqual(accounts.session_user(token, TAB)[0], session_id)
+        self.assertIsNone(accounts.session_user(token, "another-tab-secret-" + "y" * 30))  # a different tab
+        self.assertIsNone(accounts.session_user(token))                                      # no tab at all
+        self.assertEqual(self.post("/auth/session", {"code": code, "tab": TAB_ID}).status_code, 400)  # once only
+        out = self.post("/auth/logout", {"tab": TAB_ID})
         self.assertEqual(out.status_code, 204)
         self.assertIsNone(accounts.check_session(session_id))
-        self.assertIn('ahead_session=""', out.headers["set-cookie"])
+        self.assertIn(f'ahead_s_{TAB_ID}=""', out.headers["set-cookie"])
+
+    def test_signing_out_one_tab_leaves_another_tab_signed_in(self):
+        tabs = {"aaaaaaaaaaaaaaaa": "secret-a-" + "a" * 34, "bbbbbbbbbbbbbbbb": "secret-b-" + "b" * 34}
+        sessions = {}
+        for tab_id, secret in tabs.items():
+            session_id, code = accounts.start_session(self.p["id"], tab_secret=secret)
+            self.assertEqual(self.post("/auth/session", {"code": code, "tab": tab_id}).status_code, 204)
+            sessions[tab_id] = session_id
+        self.post("/auth/logout", {"tab": "aaaaaaaaaaaaaaaa"})
+        self.assertIsNone(accounts.check_session(sessions["aaaaaaaaaaaaaaaa"]))
+        token_b = self.client.cookies.get("ahead_s_bbbbbbbbbbbbbbbb")
+        self.assertEqual(accounts.session_user(token_b, tabs["bbbbbbbbbbbbbbbb"])[0], sessions["bbbbbbbbbbbbbbbb"])
+
+    def test_old_cookies_are_tidied_away_on_the_next_sign_in(self):
+        _, old_token = self.session(self.p)
+        self.client.cookies.set("ahead_session", "phase-one-token", domain="ahead.test")
+        self.client.cookies.set("ahead_s_ffffffffffffffff", old_token, domain="ahead.test")
+        accounts.sign_out_everywhere(self.p["id"])   # that old tab's session is over
+        _, code = accounts.start_session(self.p["id"], tab_secret=TAB)
+        response = self.post("/auth/session", {"code": code, "tab": TAB_ID})
+        cleared = response.headers.get_list("set-cookie")
+        self.assertTrue(any(c.startswith('ahead_session=""') for c in cleared))
+        self.assertTrue(any(c.startswith('ahead_s_ffffffffffffffff=""') for c in cleared))
+        self.assertTrue(any(c.startswith(f"ahead_s_{TAB_ID}=") and '=""' not in c for c in cleared))
 
 
 if __name__ == "__main__":

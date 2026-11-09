@@ -1,4 +1,12 @@
-"""The Streamlit side of signing in and out (see ahead/accounts.py for how sessions work)."""
+"""The Streamlit side of signing in and out (see ahead/accounts.py for how sessions work).
+
+The tab identity
+----------------
+A tiny component (no visible output) keeps ``{"id", "secret"}`` in the tab's ``sessionStorage`` and reports
+it to Python. It survives a reload; a new tab, a reopened link or a closed and reopened tab starts with
+none, so a new identity is made and no earlier sign-in matches it. (Duplicating a tab copies
+sessionStorage, so a duplicated tab stays signed in like a reload; that is the browser's choice.)
+"""
 
 import json
 from datetime import datetime
@@ -27,12 +35,70 @@ def _user_agent():
     return agent if isinstance(agent, str) else ""
 
 
-def _cookie_token():
+_TAB_JS = """
+export default function (component) {
+  const { data, setStateValue } = component;
+  const KEY = 'ahead_tab';
+  const hex = (bytes) => Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
+  const b64url = (bytes) => btoa(String.fromCharCode(...bytes)).replace(/\\+/g, '-').replace(/\\//g, '_').replace(/=+$/, '');
+  let tab = null;
+  try { tab = JSON.parse(window.sessionStorage.getItem(KEY) || 'null'); } catch (e) { tab = null; }
+  const good = tab && /^[0-9a-f]{16}$/.test(tab.id || '') && /^[A-Za-z0-9_-]{43}$/.test(tab.secret || '');
+  if (!good) {
+    tab = { id: hex(crypto.getRandomValues(new Uint8Array(8))), secret: b64url(crypto.getRandomValues(new Uint8Array(32))) };
+    try { window.sessionStorage.setItem(KEY, JSON.stringify(tab)); }
+    catch (e) { tab = { id: '', secret: '' }; }  // no sessionStorage: sign-in still works, a reload signs out
+  }
+  if (!data || data.known !== tab.id) setStateValue('tab', tab);
+}
+"""
+_tab_component = None
+TAB_KEY = "tab_identity"          # {"id", "secret"} once the tab has reported it
+_KEEP = ("ahead_tab_probe", TAB_KEY)  # survive sign-out: the tab is still the same tab
+
+
+def _component():
+    global _tab_component
+    if _tab_component is None:
+        _tab_component = st.components.v2.component("ahead_tab_identity", js=_TAB_JS)
+    return _tab_component
+
+
+def mount_tab_identity():
+    """Ask the browser tab for its identity (first thing on every run). Returns it, or None until known."""
+    known = st.session_state.get(TAB_KEY) or {}
+    with st.container(key="ahead_tab_box", height=1, border=False):
+        try:
+            result = _component()(key="ahead_tab_probe", data={"known": known.get("id")}, on_tab_change=lambda: None)
+        except Exception:  # test harness without a browser
+            result = None
+    reported = getattr(result, "tab", None) if result is not None else None
+    if isinstance(reported, dict):
+        tab = {"id": str(reported.get("id", "")), "secret": str(reported.get("secret", ""))}
+        if accounts.valid_tab_id(tab["id"]) and accounts.valid_tab_secret(tab["secret"]):
+            st.session_state[TAB_KEY] = tab
+        else:
+            st.session_state[TAB_KEY] = {"id": "", "secret": ""}  # the browser has no sessionStorage
+    return st.session_state.get(TAB_KEY)
+
+
+def _cookies():
     try:
-        token = st.context.cookies.get(accounts.COOKIE_NAME)
+        jar = dict(st.context.cookies)
     except Exception:
+        return {}
+    return {k: v for k, v in jar.items() if isinstance(k, str) and isinstance(v, str)}  # the test harness has none
+
+
+def has_tab_cookie(cookies=None):
+    return any(name.startswith(accounts.COOKIE_PREFIX) for name in (cookies if cookies is not None else _cookies()))
+
+
+def resume(tab, cookies):
+    """The (session_id, user) a reloaded tab returns to, or None. Needs this tab's cookie and secret."""
+    if not tab or not accounts.valid_tab_id(tab.get("id")):
         return None
-    return token if isinstance(token, str) else None  # the test harness has no real cookies
+    return accounts.session_user(cookies.get(accounts.cookie_name(tab["id"])), tab.get("secret"))
 
 
 def load_into_state(account):
@@ -51,18 +117,21 @@ def load_into_state(account):
 
 
 def begin(account):
-    """After a correct password: open a session; the next page swaps the code for the cookie."""
-    session_id, code = accounts.start_session(account["id"], _user_agent(), request_ip())
+    """After a correct password: open a session for this tab; the next page swaps the code for the tab's cookie."""
+    tab = st.session_state.get(TAB_KEY) or {}
+    session_id, code = accounts.start_session(account["id"], _user_agent(), request_ip(), tab.get("secret"))
     st.session_state.session_id = session_id
-    st.session_state.pending_handoff = code
+    if accounts.valid_tab_id(tab.get("id")):
+        st.session_state.pending_handoff = (code, tab["id"])
     load_into_state(account)
 
 
-def restore():
-    """Run on every rerun, before any page.
+def restore(tab):
+    """Run on every rerun, before any page. Returns False while the tab hasn't reported its identity yet
+    and there is a sign-in cookie it might match (the app then waits a moment instead of flashing the login).
 
     * Signed in in this tab: re-check the session (instant sign-out after deactivation or a password change).
-    * Not signed in, but the browser has a valid session cookie (a reload): sign back in silently.
+    * Not signed in, but this tab has a valid session (a reload): sign back in silently.
     """
     if st.session_state.get("authenticated"):
         session_id = st.session_state.get("session_id")
@@ -76,14 +145,17 @@ def restore():
         if fresh is None:
             _forget(signed_out_notice=True)
             st.rerun()
-        return
-    token = _cookie_token()
-    if token and not st.session_state.get("cookie_cleared"):
-        found = accounts.session_user(token)
+        return True
+    cookies = _cookies()
+    if tab is None:
+        return not has_tab_cookie(cookies)
+    if not st.session_state.get("cookie_cleared"):
+        found = resume(tab, cookies)
         if found:
             session_id, account = found
             st.session_state.session_id = session_id
             load_into_state(account)
+    return True
 
 
 def _is_active(user_id):
@@ -94,8 +166,12 @@ def _is_active(user_id):
 
 
 def _forget(signed_out_notice=False):
+    tab = st.session_state.get(TAB_KEY)
     for key in list(st.session_state.keys()):
-        del st.session_state[key]
+        if key not in _KEEP:
+            del st.session_state[key]
+    if tab:
+        st.session_state.cookie_tab = tab.get("id", "")
     # The cookie still exists in this browser until the script below clears it; don't restore from it meanwhile.
     st.session_state.cookie_cleared = True
     st.session_state.clear_cookie = True
@@ -119,9 +195,12 @@ def _script(body):
 
 def browser_scripts():
     """Cookie work the server can't do over the websocket: done by a same-site POST from the page."""
-    code = st.session_state.pop("pending_handoff", None)
-    if code:
+    pending = st.session_state.pop("pending_handoff", None)
+    if pending:
+        code, tab_id = pending
         _script("fetch('/auth/session',{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json'},"
-                f"body:JSON.stringify({{code:{json.dumps(code)}}})}});")
+                f"body:JSON.stringify({{code:{json.dumps(code)},tab:{json.dumps(tab_id)}}})}});")
     if st.session_state.pop("clear_cookie", False):
-        _script("fetch('/auth/logout',{method:'POST',credentials:'same-origin'});")
+        tab_id = st.session_state.pop("cookie_tab", "")
+        _script("fetch('/auth/logout',{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json'},"
+                f"body:JSON.stringify({{tab:{json.dumps(tab_id)}}})}});")

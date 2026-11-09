@@ -10,7 +10,7 @@ import os
 
 import streamlit as st
 
-from ahead import accounts
+from ahead import accounts, mailer
 from ahead.config import BASE, ROLE_ADMIN, ROLE_DOCTOR, ROLE_PATIENT
 from ahead.resources import icon_uri, image_data_uri, static_url
 from ahead.session import begin, request_ip
@@ -77,6 +77,10 @@ def _sign_in(email: str, password: str, account_type: str) -> str | None:
     if not account:
         accounts.record_failed_sign_in(email, ip)
         return "Incorrect email, password or account type."
+    if accounts.needs_verification(account["id"]):
+        st.session_state.unverified_user = {"id": account["id"], "email": account["email"]}
+        return "Confirm your email address first: open the link we emailed you when you signed up."
+    st.session_state.pop("unverified_user", None)
     begin(account)
     if account["role"] == ROLE_PATIENT:
         event(account['id'],'login')
@@ -104,9 +108,17 @@ def _register(name: str, email: str, password: str, confirm: str) -> tuple[bool,
     if _reserved(email):
         return False, "This email address is reserved."
     accounts.record_sign_up(ip)
-    if not create_user(email, password, ROLE_PATIENT, name.strip()[:120]):
+    confirm_by_email = mailer.enabled()
+    if not create_user(email, password, ROLE_PATIENT, name.strip()[:120], verified=not confirm_by_email):
         return False, "That email is already registered."
     accounts.audit("patient_registered", ip=ip)
+    if confirm_by_email:
+        from ahead.storage import connection
+        with connection() as db:
+            user_id = db.execute("SELECT id FROM users WHERE email=?", (email,)).fetchone()[0]
+        accounts.send_verification(user_id, ip)
+        return True, (f"Account created. We've emailed a confirmation link to {email}. Open it, then sign in. "
+                      "It can take a minute, and it may land in Junk or Spam.")
     return True, "Account created. Sign in above."
 
 
@@ -180,12 +192,31 @@ def render_login() -> None:
                         st.query_params.clear()
                         st.rerun()
 
+                pending = st.session_state.get("unverified_user")
+                if pending:
+                    if st.button("Email me a new confirmation link", key="resend_verification", width="stretch"):
+                        if accounts.send_verification(pending["id"], request_ip()):
+                            st.success(f"Sent to {pending['email']}. It can take a minute; check Junk or Spam too.")
+                        else:
+                            st.warning("We couldn't send another link just now. Wait an hour and try again.")
+
                 if account_type != "Patient" and not has_doctor_account():
                     st.html(
                         '<div class="login-note">No doctor account is set up yet. '
                         'Doctor and admin accounts are created by the AHEAD admin.</div>'
                     )
-                st.html('<div class="login-note">Forgot your password? Ask the AHEAD team for a reset link.</div>')
+                if mailer.enabled():
+                    with st.expander("Forgot your password?"):
+                        with st.form("forgot_password", clear_on_submit=True):
+                            forgot_email = st.text_input("Your account email", max_chars=254, key="forgot_email")
+                            if st.form_submit_button("Email me a reset link"):
+                                accounts.request_password_reset(forgot_email, request_ip())
+                                st.session_state.forgot_sent = True
+                        if st.session_state.pop("forgot_sent", False):
+                            st.success("If an AHEAD account uses that email, a reset link is on its way. "
+                                       "It works for 60 minutes. Check Junk or Spam too.")
+                else:
+                    st.html('<div class="login-note">Forgot your password? Ask the AHEAD team for a reset link.</div>')
 
                 with st.expander("Create a patient account"):
                     with st.form("patient_registration"):
@@ -249,8 +280,9 @@ PUBLIC_CONTENT = {
             ("1", "Sign in", ["Patients can register with \"Create a patient account\" on the sign-in card, then "
                              "sign in with Patient selected. Doctor accounts are added by the AHEAD admin, and doctors choose "
                              "their own password through a one-time set-up link.",
-                             "Your screenings, lifestyle check-ins and medication records are saved to your account, and "
-                             "you stay signed in when you reload the page. AHEAD signs you out after 2 hours without activity."]),
+                             "Your screenings, lifestyle check-ins and medication records are saved to your account. "
+                             "You stay signed in when you reload the page, but closing the tab signs you out, and a new tab "
+                             "asks you to sign in again. AHEAD also signs you out after 2 hours without activity."]),
             ("2", "Run a screening", ["Open Screenings, pick a condition and fill in the form. Lab values are optional unless "
                                      "marked as needed. "
                                      "AHEAD scores the answers with the recommended model (you can compare alternatives)."]),
@@ -312,9 +344,10 @@ def render_account_link(token: str) -> None:
                     st.rerun()
                 return
             if not found:
+                again = ("Use “Forgot your password?” on the sign-in page for a new reset link, or ask the AHEAD team."
+                         if mailer.enabled() else "Ask the AHEAD team for a new one.")
                 st.html('<div class="login-heading"><h2>This link has expired</h2>'
-                        '<p>Links work once. Set-up links last 3 days and reset links 60 minutes. '
-                        'Ask the AHEAD team for a new one.</p></div>')
+                        f'<p>Links work once. Set-up links last 3 days and reset links 60 minutes. {escape(again)}</p></div>')
                 if st.button("Go to sign in", width="stretch"):
                     st.query_params.clear()
                     st.rerun()
@@ -339,3 +372,40 @@ def render_account_link(token: str) -> None:
                 else:
                     st.error("This link has expired. Ask the AHEAD team for a new one.")
     _footer()
+
+
+# =============================================================================
+# EMAIL CONFIRMATION LINK AND THE MOMENT AFTER A RELOAD
+# =============================================================================
+
+def render_verify_link(token: str) -> None:
+    """/?verify=<token>: confirms the email address once, then the person signs in."""
+    _public_chrome("login")
+    key = "verify_result_" + token[:16]
+    if key not in st.session_state:  # reruns on this page must not use the link a second time
+        st.session_state[key] = bool(accounts.verify_email(token, request_ip()))
+    with st.container(key="login_shell"):
+        _, middle, _ = st.columns([0.25, 0.5, 0.25])
+        with middle, st.container(key="login_form"):
+            if st.session_state[key]:
+                st.html('<div class="login-heading"><h2>Email confirmed</h2><p>Thank you. You can sign in now.</p></div>')
+            else:
+                st.html('<div class="login-heading"><h2>This link has expired</h2><p>Confirmation links work once and '
+                        'last 24 hours. Sign in with your email and password to get a new one.</p></div>')
+            if st.button("Go to sign in", type="primary", width="stretch"):
+                st.session_state.pop(key, None)
+                st.query_params.clear()
+                st.rerun()
+    _footer()
+
+
+def render_tab_wait() -> None:
+    """Shown for a moment after a reload while this tab tells AHEAD which sign-in is its own."""
+    _public_chrome("login")
+    with st.container(key="login_shell"):
+        _, middle, _ = st.columns([0.3, 0.4, 0.3])
+        with middle, st.container(key="login_form"):
+            st.html('<div class="login-heading"><h2>Opening AHEAD…</h2><p>Checking your sign-in.</p></div>')
+            if st.button("Show the sign-in page", width="stretch", key="skip_tab_wait_button"):
+                st.session_state.skip_tab_wait = True
+                st.rerun()

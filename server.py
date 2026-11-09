@@ -4,8 +4,10 @@ Run with:  streamlit run server.py     (Render's start command does the same)
 
 Routes added next to Streamlit:
   GET  /healthz       database check for Render's health check and wake-up pings
-  POST /auth/session  swaps a one-time sign-in code for the HttpOnly session cookie
-  POST /auth/logout   ends the session in this browser and deletes the cookie
+  POST /auth/session  swaps a one-time sign-in code for this tab's HttpOnly session cookie
+  POST /auth/logout   ends this tab's session and deletes its cookie (other tabs keep theirs)
+
+It also starts the background email sender (ahead/mailer.py) when BREVO_API_KEY is set.
 
 `streamlit run app.py` still works for quick local UI work, but sign-ins then don't survive a reload.
 """
@@ -20,7 +22,7 @@ from starlette.middleware import Middleware
 from starlette.responses import JSONResponse, Response
 from starlette.routing import Route
 
-from ahead import accounts, db
+from ahead import accounts, db, mailer
 from ahead.storage import init_db
 
 log = logging.getLogger("ahead.server")
@@ -48,31 +50,58 @@ async def healthz(request):
                          "backend": db.describe_target().split("@")[0]}, status_code=200 if ok else 503)
 
 
+async def _json_body(request):
+    try:
+        body = json.loads(await request.body() or b"{}")
+    except ValueError:
+        return {}
+    return body if isinstance(body, dict) else {}
+
+
+def _delete(response, request, name):
+    response.delete_cookie(name, path="/", httponly=True, secure=_https(request), samesite="strict")
+
+
+def _dead_tab_cookies(cookies, keep):
+    """Cookies of tabs whose sessions have ended (signed out, idle, closed long ago), to tidy them away."""
+    return [name for name, token in cookies.items()
+            if name.startswith(accounts.COOKIE_PREFIX) and name != keep and not accounts.token_is_live(token)]
+
+
 async def auth_session(request):
     if not _same_site(request):
         return JSONResponse({"error": "forbidden"}, status_code=403)
-    try:
-        code = json.loads(await request.body() or b"{}").get("code", "")
-    except (ValueError, AttributeError):
-        code = ""
-    result = await run_in_threadpool(accounts.complete_handoff, str(code))
+    body = await _json_body(request)
+    code, tab_id = str(body.get("code", "")), body.get("tab", "")
+    if not accounts.valid_tab_id(tab_id):
+        return JSONResponse({"error": "invalid tab"}, status_code=400)
+    result = await run_in_threadpool(accounts.complete_handoff, code)
     if not result:
         return JSONResponse({"error": "invalid or expired"}, status_code=400)
     token, max_age = result
+    name = accounts.cookie_name(tab_id)
     response = Response(status_code=204)
-    response.set_cookie(accounts.COOKIE_NAME, token, max_age=max_age, path="/", httponly=True,
-                        secure=_https(request), samesite="strict")
+    response.set_cookie(name, token, max_age=max_age, path="/", httponly=True, secure=_https(request), samesite="strict")
+    for dead in await run_in_threadpool(_dead_tab_cookies, dict(request.cookies), name):
+        _delete(response, request, dead)
+    if accounts.LEGACY_COOKIE in request.cookies:
+        _delete(response, request, accounts.LEGACY_COOKIE)
     return response
 
 
 async def auth_logout(request):
     if not _same_site(request):
         return JSONResponse({"error": "forbidden"}, status_code=403)
-    token = request.cookies.get(accounts.COOKIE_NAME)
-    if token:
-        await run_in_threadpool(accounts.end_session, None, token)
+    tab_id = (await _json_body(request)).get("tab", "")
     response = Response(status_code=204)
-    response.delete_cookie(accounts.COOKIE_NAME, path="/", httponly=True, secure=_https(request), samesite="strict")
+    if accounts.valid_tab_id(tab_id):
+        name = accounts.cookie_name(tab_id)
+        token = request.cookies.get(name)
+        if token:
+            await run_in_threadpool(accounts.end_session, None, token)
+        _delete(response, request, name)
+    if accounts.LEGACY_COOKIE in request.cookies:
+        _delete(response, request, accounts.LEGACY_COOKIE)
     return response
 
 
@@ -109,6 +138,7 @@ def _startup():
         accounts.prune()
     except Exception:
         log.exception("start-up clean-up failed")
+    mailer.start_background_sender()
 
 
 _startup()

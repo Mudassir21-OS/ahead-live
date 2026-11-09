@@ -126,8 +126,11 @@ def has_doctor_account():
         return db.execute("SELECT 1 FROM users WHERE role=? LIMIT 1", (ROLE_DOCTOR,)).fetchone() is not None
 
 
-def create_user(email, password, role, name, institution="", demo=False, created_by=None):
-    """Create an account. False if the email is taken; ValueError for a short password or an unknown role."""
+def create_user(email, password, role, name, institution="", demo=False, created_by=None, verified=True):
+    """Create an account. False if the email is taken; ValueError for a short password or an unknown role.
+
+    verified=False for a patient who signed up while emails are on (confirmed by the emailed link) and for
+    staff added by an admin (confirmed when they set their password from the emailed set-up link)."""
     if role not in ROLES or (len(password) < MIN_PASSWORD and not demo):
         raise ValueError(f"Use a password of at least {MIN_PASSWORD} characters.")
     email = email.strip().lower()
@@ -136,9 +139,10 @@ def create_user(email, password, role, name, institution="", demo=False, created
             return False
     try:
         with connection() as db:
-            db.execute("INSERT INTO users(email,password_hash,role,name,institution,created_at,created_by) VALUES(?,?,?,?,?,?,?)",
-                       (email, password_hash(password), role, name.strip(), institution.strip(),
-                        datetime.now(timezone.utc).isoformat(), created_by))
+            now = datetime.now(timezone.utc).isoformat()
+            db.execute("INSERT INTO users(email,password_hash,role,name,institution,created_at,created_by,email_verified_at) "
+                       "VALUES(?,?,?,?,?,?,?,?)", (email, password_hash(password), role, name.strip(), institution.strip(),
+                                                   now, created_by, now if verified else None))
     except database.IntegrityError:
         return False
     return True
@@ -178,9 +182,13 @@ def update_preferences(user_id, preferences):
 
 
 def update_profile(user_id, name, email, institution):
+    """Save the profile. Returns True when the email address changed."""
+    email = email.strip().lower()
     with connection() as db:
+        old = db.execute("SELECT email FROM users WHERE id=?", (user_id,)).fetchone()
         db.execute("UPDATE users SET name=?,email=?,institution=? WHERE id=?",
-                   (name.strip(), email.strip().lower(), institution.strip(), user_id))
+                   (name.strip(), email, institution.strip(), user_id))
+    return bool(old) and old["email"] != email
 
 
 def change_password(user_id, current, new):

@@ -1,22 +1,28 @@
 """Sign-in sessions, sign-in limits, one-time account links and the audit log.
 
-How a sign-in survives a page reload
-------------------------------------
-Streamlit forgets ``st.session_state`` when the browser reloads, so the sign-in also lives in an
-HttpOnly cookie that page scripts cannot read:
+How a sign-in belongs to one browser tab
+---------------------------------------
+Reloading the page keeps you signed in; closing the tab signs you out; a new tab, or typing the link
+again, shows the sign-in page. (AHEAD holds health data, so a shared or family computer must not stay
+signed in after the tab is closed.)
 
-1. The sign-in form checks the password and calls ``start_session``. That saves a ``sessions`` row
-   and returns a one-time handoff code (valid 60 seconds).
-2. A small script on the next page POSTs the code to ``/auth/session`` (``ahead/server.py``), which
-   calls ``complete_handoff``: it makes the real session token, stores only its SHA-256 and sends the
-   token back as the cookie.
-3. On every page load and every rerun ``session_user`` checks the cookie's session: not revoked,
-   not expired, not idle too long, account still active and its ``token_version`` unchanged.
-   Deactivating an account or changing its password raises ``token_version`` and so signs that person
-   out everywhere at once.
+* Every tab has its own identity in ``sessionStorage``: a public id and a random secret
+  (``ahead/session.py``). The browser keeps sessionStorage through reloads and forgets it when the tab
+  closes; a new tab starts with an empty one.
+* The sign-in form checks the password and calls ``start_session`` with the tab's secret. The session
+  row keeps only SHA-256 hashes, and a one-time handoff code (valid 60 seconds) is returned.
+* A small script POSTs the code and the tab id to ``/auth/session`` (``server.py``). That makes the real
+  session token and sets it as an HttpOnly, SameSite=Strict cookie named after the tab
+  (``ahead_s_<tab id>``), so one tab signing in or out never touches another tab's cookie.
+* On a reload, ``session_user`` needs both: the tab's cookie and the tab's secret. A closed tab's cookie
+  is useless without the secret, which went with the tab.
+* Every rerun re-checks the session: not revoked, not expired, not idle too long, account still active
+  and its ``token_version`` unchanged. Deactivating an account or changing its password raises
+  ``token_version`` and so signs that person out everywhere at once.
 """
 
 import hashlib
+import hmac
 import json
 import logging
 import os
@@ -29,7 +35,9 @@ from ahead.storage import MIN_PASSWORD, connection, password_hash, user_view
 
 log = logging.getLogger(__name__)
 
-COOKIE_NAME = "ahead_session"
+COOKIE_PREFIX = "ahead_s_"        # + the tab id: one cookie per signed-in tab
+LEGACY_COOKIE = "ahead_session"    # Phase 1's single cookie; cleared when seen
+TAB_ID_LENGTH = 16                 # hex characters
 HANDOFF_SECONDS = 60
 # A medical record should not stay open on a shared computer: sign out after 2 hours without activity,
 # and after 12 hours in any case (the cookie's own lifetime).
@@ -39,6 +47,9 @@ SEEN_EVERY = timedelta(minutes=5)  # how often last_seen_at is written (not on e
 
 SETUP_DAYS = 3
 RESET_MINUTES = 60
+VERIFY_HOURS = 24
+LINK_LIFE = {"setup": timedelta(days=SETUP_DAYS), "reset": timedelta(minutes=RESET_MINUTES),
+             "verify": timedelta(hours=VERIFY_HOURS)}
 
 # Sign-in limits. Only failures count, by email + address and by address alone, so a class sharing
 # campus Wi-Fi is not blocked by one person's typos.
@@ -47,6 +58,10 @@ FAILS_PER_ACCOUNT = 5
 FAILS_PER_ADDRESS = 50
 SIGNUP_WINDOW = timedelta(hours=1)
 SIGNUPS_PER_ADDRESS = 5
+# Self-service emails: a reset request or a new confirmation link, per email address and per network.
+EMAIL_WINDOW = timedelta(hours=1)
+EMAILS_PER_ACCOUNT = 3
+EMAILS_PER_ADDRESS = 10
 
 
 def _now():
@@ -64,6 +79,18 @@ def _parse(stamp):
 
 def _hash(token):
     return hashlib.sha256(token.encode()).hexdigest()
+
+
+def valid_tab_id(tab_id):
+    return isinstance(tab_id, str) and len(tab_id) == TAB_ID_LENGTH and all(c in "0123456789abcdef" for c in tab_id)
+
+
+def valid_tab_secret(secret):
+    return isinstance(secret, str) and 32 <= len(secret) <= 100
+
+
+def cookie_name(tab_id):
+    return COOKIE_PREFIX + tab_id
 
 
 # =============================================================================
@@ -161,27 +188,34 @@ def record_sign_up(ip):
 
 
 def prune(days=30):
-    """Drop old rate-limit rows and dead sessions (called at start-up)."""
+    """Drop old rate-limit rows, dead sessions and old outbox rows (called at start-up)."""
     cutoff = _stamp(_now() - timedelta(days=days))
     with connection() as db:
         db.execute("DELETE FROM rate_events WHERE created_at<?", (_stamp(_now() - timedelta(days=2)),))
         db.execute("DELETE FROM sessions WHERE expires_at<? OR (revoked_at IS NOT NULL AND revoked_at<?)", (cutoff, cutoff))
+    from ahead import mailer
+    mailer.prune(days)
 
 
 # =============================================================================
 # SESSIONS
 # =============================================================================
 
-def start_session(user_id, user_agent="", ip=""):
-    """After a correct password: a session row and the one-time code that turns into the cookie."""
+def start_session(user_id, user_agent="", ip="", tab_secret=None):
+    """After a correct password: a session row for this tab and the one-time code that turns into its cookie.
+
+    Without a tab secret (no sessionStorage, or automated tests) the session works in this tab until it
+    closes or reloads, but can never be resumed from a cookie.
+    """
     code = secrets.token_urlsafe(32)
     now = _now()
+    tab_hash = _hash(tab_secret) if valid_tab_secret(tab_secret) else None
     with connection() as db:
         version = db.execute("SELECT token_version FROM users WHERE id=?", (user_id,)).fetchone()[0]
-        cursor = db.execute("""INSERT INTO sessions(user_id,handoff_hash,handoff_expires_at,token_version,created_at,last_seen_at,expires_at,user_agent)
-                               VALUES(?,?,?,?,?,?,?,?)""",
+        cursor = db.execute("""INSERT INTO sessions(user_id,handoff_hash,handoff_expires_at,token_version,created_at,last_seen_at,expires_at,user_agent,tab_hash)
+                               VALUES(?,?,?,?,?,?,?,?,?)""",
                             (user_id, _hash(code), _stamp(now + timedelta(seconds=HANDOFF_SECONDS)), version, _stamp(now),
-                             _stamp(now), _stamp(now + timedelta(hours=MAX_HOURS)), (user_agent or "")[:200]))
+                             _stamp(now), _stamp(now + timedelta(hours=MAX_HOURS)), (user_agent or "")[:200], tab_hash))
         session_id = cursor.lastrowid
         db.execute("UPDATE users SET last_login_at=? WHERE id=?", (_stamp(now), user_id))
     audit("sign_in", actor_id=user_id, target_user_id=user_id, ip=ip)
@@ -215,7 +249,7 @@ def _valid(row, now):
 
 
 _SESSION_QUERY = """SELECT s.id session_id, s.token_version session_version, s.revoked_at, s.expires_at, s.last_seen_at,
-                           u.* FROM sessions s JOIN users u ON u.id=s.user_id WHERE {}"""
+                           s.tab_hash, u.* FROM sessions s JOIN users u ON u.id=s.user_id WHERE {}"""
 
 
 def _touch(db, row, now):
@@ -223,14 +257,18 @@ def _touch(db, row, now):
         db.execute("UPDATE sessions SET last_seen_at=? WHERE id=?", (_stamp(now), row["session_id"]))
 
 
-def session_user(token):
-    """(session_id, user) for a cookie token, or None when it is unknown, expired, idle or revoked."""
-    if not isinstance(token, str) or not token or len(token) > 200:
+def session_user(token, tab_secret=None):
+    """(session_id, user) for a tab's cookie token and that tab's secret.
+
+    None when the token is unknown, expired, idle or revoked, or the secret isn't the one the session was
+    opened with (another tab, or a tab that was closed and reopened).
+    """
+    if not isinstance(token, str) or not token or len(token) > 200 or not valid_tab_secret(tab_secret):
         return None
     now = _now()
     with connection() as db:
         row = db.execute(_SESSION_QUERY.format("s.token_hash=?"), (_hash(token),)).fetchone()
-        if not _valid(row, now):
+        if not _valid(row, now) or not row["tab_hash"] or not hmac.compare_digest(row["tab_hash"], _hash(tab_secret)):
             return None
         _touch(db, row, now)
     return row["session_id"], user_view(row)
@@ -258,6 +296,15 @@ def end_session(session_id=None, token=None):
             db.execute("UPDATE sessions SET revoked_at=? WHERE token_hash=? AND revoked_at IS NULL", (_stamp(), _hash(token)))
 
 
+def token_is_live(token):
+    """True while a cookie token still belongs to a usable session (used to tidy away dead tab cookies)."""
+    if not isinstance(token, str) or not token or len(token) > 200:
+        return False
+    with connection() as db:
+        row = db.execute(_SESSION_QUERY.format("s.token_hash=?"), (_hash(token),)).fetchone()
+    return _valid(row, _now())
+
+
 def sign_out_everywhere(user_id):
     with connection() as db:
         db.execute("UPDATE users SET token_version=token_version+1 WHERE id=?", (user_id,))
@@ -278,12 +325,12 @@ def keep_session_after_password_change(session_id, user_id):
 # =============================================================================
 
 def issue_link(user_id, purpose, created_by=None):
-    """A new one-time token for 'setup' or 'reset'; earlier unused ones of that kind stop working."""
-    if purpose not in ("setup", "reset"):
+    """A new one-time token for 'setup', 'reset' or 'verify'; earlier unused ones of that kind stop working."""
+    if purpose not in LINK_LIFE:
         raise ValueError(purpose)
     token = secrets.token_urlsafe(32)
     now = _now()
-    life = timedelta(days=SETUP_DAYS) if purpose == "setup" else timedelta(minutes=RESET_MINUTES)
+    life = LINK_LIFE[purpose]
     with connection() as db:
         db.execute("UPDATE account_tokens SET used_at=? WHERE user_id=? AND purpose=? AND used_at IS NULL",
                    (_stamp(now), user_id, purpose))
@@ -293,12 +340,12 @@ def issue_link(user_id, purpose, created_by=None):
 
 
 def link_account(token):
-    """The account a still-valid link belongs to: {'purpose', 'user'} or None."""
+    """The account a still-valid set-up or reset link belongs to: {'purpose', 'user'} or None."""
     if not token or len(token) > 200:
         return None
     with connection() as db:
         row = db.execute("""SELECT t.purpose, u.* FROM account_tokens t JOIN users u ON u.id=t.user_id
-                            WHERE t.token_hash=? AND t.used_at IS NULL AND t.expires_at>=?""",
+                            WHERE t.token_hash=? AND t.used_at IS NULL AND t.expires_at>=? AND t.purpose IN ('setup','reset')""",
                          (_hash(token), _stamp())).fetchone()
     if not row or not row["is_active"]:
         return None
@@ -311,20 +358,133 @@ def use_link(token, new_password, ip=""):
         raise ValueError(f"Use a password of at least {MIN_PASSWORD} characters.")
     now = _stamp()
     with connection() as db:
-        row = db.execute("SELECT id,user_id,purpose FROM account_tokens WHERE token_hash=? AND used_at IS NULL AND expires_at>=?",
-                         (_hash(token or ""), now)).fetchone()
+        row = db.execute("SELECT id,user_id,purpose FROM account_tokens WHERE token_hash=? AND used_at IS NULL AND expires_at>=? "
+                         "AND purpose IN ('setup','reset')", (_hash(token or ""), now)).fetchone()
         if not row or not db.execute("UPDATE account_tokens SET used_at=? WHERE id=? AND used_at IS NULL",
                                      (now, row["id"])).rowcount:
             return None
         active = db.execute("SELECT is_active FROM users WHERE id=?", (row["user_id"],)).fetchone()
         if not active or not active["is_active"]:
             return None
-        db.execute("UPDATE users SET password_hash=?,token_version=token_version+1 WHERE id=?",
-                   (password_hash(new_password), row["user_id"]))
+        # The link arrived at this address, so the address is confirmed too.
+        db.execute("UPDATE users SET password_hash=?,token_version=token_version+1,email_verified_at=COALESCE(email_verified_at,?) "
+                   "WHERE id=?", (password_hash(new_password), now, row["user_id"]))
         db.execute("UPDATE sessions SET revoked_at=? WHERE user_id=? AND revoked_at IS NULL", (now, row["user_id"]))
     audit("password_set_from_link", actor_id=row["user_id"], target_user_id=row["user_id"], ip=ip, purpose=row["purpose"])
     with connection() as db:
-        return user_view(db.execute("SELECT * FROM users WHERE id=?", (row["user_id"],)).fetchone())
+        user = user_view(db.execute("SELECT * FROM users WHERE id=?", (row["user_id"],)).fetchone())
+    if row["purpose"] == "reset":
+        notify(user, "password_changed")
+    return user
+
+
+# =============================================================================
+# EMAIL CONFIRMATION AND SELF-SERVICE RESET
+# =============================================================================
+
+def is_verified(user_id):
+    with connection() as db:
+        row = db.execute("SELECT email_verified_at FROM users WHERE id=?", (user_id,)).fetchone()
+    return bool(row and row["email_verified_at"])
+
+
+def mark_verified(user_id):
+    with connection() as db:
+        db.execute("UPDATE users SET email_verified_at=COALESCE(email_verified_at,?) WHERE id=?", (_stamp(), user_id))
+
+
+def needs_verification(user_id):
+    """Sign-in waits for a confirmed email only while emails are switched on (otherwise nobody could confirm)."""
+    from ahead import mailer
+    return mailer.enabled() and not is_verified(user_id)
+
+
+def send_verification(user_id, ip=""):
+    """Email a new confirmation link. False when the limit for this account or network is reached."""
+    from ahead import mailer
+    with connection() as db:
+        row = db.execute("SELECT id,email,name,is_active,email_verified_at FROM users WHERE id=?", (user_id,)).fetchone()
+    if not row or not row["is_active"] or row["email_verified_at"] or not mailer.enabled():
+        return False
+    if not _email_allowed(f"verify|{user_id}", ip):
+        return False
+    token = issue_link(user_id, "verify")
+    return mailer.queue(row["email"], "verify", user_id, row["name"], link=f"{site_url()}/?verify={token}") is not None
+
+
+def verify_email(token, ip=""):
+    """Open a confirmation link (once). Returns the user, or None for an unknown, used or expired link."""
+    if not token or len(token) > 200:
+        return None
+    now = _stamp()
+    with connection() as db:
+        row = db.execute("SELECT id,user_id FROM account_tokens WHERE token_hash=? AND purpose='verify' AND used_at IS NULL "
+                         "AND expires_at>=?", (_hash(token), now)).fetchone()
+        if not row or not db.execute("UPDATE account_tokens SET used_at=? WHERE id=? AND used_at IS NULL",
+                                     (now, row["id"])).rowcount:
+            return None
+        user = db.execute("SELECT * FROM users WHERE id=?", (row["user_id"],)).fetchone()
+        if not user or not user["is_active"]:
+            return None
+        db.execute("UPDATE users SET email_verified_at=COALESCE(email_verified_at,?) WHERE id=?", (now, row["user_id"]))
+    audit("email_verified", actor_id=row["user_id"], target_user_id=row["user_id"], ip=ip)
+    return user_view(user)
+
+
+def _email_allowed(subject, ip):
+    """Limits for emails a visitor can trigger: 3 an hour per account, 10 an hour per network."""
+    since = _now() - EMAIL_WINDOW
+    with connection() as db:
+        if _count(db, "email_request", subject, since) >= EMAILS_PER_ACCOUNT:
+            return False
+        if ip and _count(db, "email_request_ip", ip, since) >= EMAILS_PER_ADDRESS:
+            return False
+        _add_event(db, "email_request", subject)
+        if ip:
+            _add_event(db, "email_request_ip", ip)
+    return True
+
+
+def request_password_reset(email, ip=""):
+    """'Forgot password' on the sign-in page. The visitor always sees the same answer, whether or not the
+    account exists, so the form can't be used to find out who has an AHEAD account."""
+    from ahead import mailer
+    email = (email or "").strip().lower()
+    if not mailer.enabled() or "@" not in email or len(email) > 254:
+        return
+    with connection() as db:
+        row = db.execute("SELECT id,email,name,is_active FROM users WHERE email=?", (email,)).fetchone()
+    if not row or not row["is_active"]:
+        _email_allowed(f"reset|{email}", ip)  # count it anyway: same limits for unknown addresses
+        return
+    if not _email_allowed(f"reset|{email}", ip):
+        return
+    token = issue_link(row["id"], "reset")
+    mailer.queue(row["email"], "reset", row["id"], row["name"], link=f"{site_url()}/?reset={token}")
+    audit("reset_requested", actor_id=row["id"], target_user_id=row["id"], ip=ip)
+
+
+def notify(user, kind):
+    """A security notice (password changed, account switched off or on). Silently nothing when emails are off."""
+    from ahead import mailer
+    try:
+        mailer.queue(user["email"], kind, user["id"], user.get("name", ""), site=site_url())
+    except Exception:  # a notice must never block the action it reports
+        log.exception("could not queue the %s email", kind)
+
+
+def site_url():
+    """The public address used in emailed links (AHEAD_PUBLIC_URL; the browser's address as a fallback)."""
+    configured = os.environ.get("AHEAD_PUBLIC_URL", "").strip().rstrip("/")
+    if configured:
+        return configured
+    try:
+        from urllib.parse import urlsplit
+        import streamlit as st
+        parts = urlsplit(st.context.url)
+        return f"{parts.scheme}://{parts.netloc}"
+    except Exception:
+        return ""
 
 
 # =============================================================================
@@ -354,12 +514,15 @@ def create_staff_account(admin_id, email, name, role, institution="", ip=""):
     email = (email or "").strip().lower()
     if "@" not in email or "." not in email.split("@")[-1] or not (name or "").strip():
         raise ValueError("Enter a name and a valid email address.")
-    if not create_user(email, secrets.token_urlsafe(24), role, name, institution, created_by=admin_id):
+    if not create_user(email, secrets.token_urlsafe(24), role, name, institution, created_by=admin_id, verified=False):
         raise ValueError("An account with that email already exists.")
     with connection() as db:
         user_id = db.execute("SELECT id FROM users WHERE email=?", (email,)).fetchone()[0]
     audit("account_created", actor_id=admin_id, target_user_id=user_id, ip=ip, role=role)
-    return user_id, issue_link(user_id, "setup", admin_id)
+    token = issue_link(user_id, "setup", admin_id)
+    from ahead import mailer
+    mailer.queue(email, "setup", user_id, name.strip(), link=f"{site_url()}/?setup={token}")
+    return user_id, token
 
 
 def set_active(admin_id, user_id, active, ip=""):
@@ -380,6 +543,10 @@ def set_active(admin_id, user_id, active, ip=""):
             db.execute("UPDATE sessions SET revoked_at=? WHERE user_id=? AND revoked_at IS NULL", (_stamp(), user_id))
             db.execute("UPDATE account_tokens SET used_at=? WHERE user_id=? AND used_at IS NULL", (_stamp(), user_id))
     audit("account_reactivated" if active else "account_deactivated", actor_id=admin_id, target_user_id=user_id, ip=ip)
+    with connection() as db:
+        person = db.execute("SELECT id,email,name,is_active FROM users WHERE id=?", (user_id,)).fetchone()
+    if person and bool(person["is_active"]) != bool(row["is_active"]):  # only when something really changed
+        notify(dict(person), "reactivated" if active else "deactivated")
 
 
 def admin_reset_link(admin_id, user_id, ip=""):
@@ -392,6 +559,10 @@ def admin_reset_link(admin_id, user_id, ip=""):
         raise ValueError("Reactivate the account first.")
     token = issue_link(user_id, "reset", admin_id)
     audit("reset_link_created", actor_id=admin_id, target_user_id=user_id, ip=ip)
+    with connection() as db:
+        person = db.execute("SELECT email,name FROM users WHERE id=?", (user_id,)).fetchone()
+    from ahead import mailer
+    mailer.queue(person["email"], "reset", user_id, person["name"], link=f"{site_url()}/?reset={token}")
     return token
 
 

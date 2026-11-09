@@ -32,7 +32,7 @@ explanation.
 
 | Area | What it does |
 |---|---|
-| **Sign-in** | Patient, Doctor and Admin accounts; you stay signed in after a reload; sign-in limits; public About / Contact / Help pages |
+| **Sign-in** | Patient, Doctor and Admin accounts; sign-in belongs to one browser tab (a reload keeps it, closing the tab ends it); email confirmation and self-service password reset; sign-in limits; public About / Contact / Help pages |
 | **Admin** | Accounts & Security page: add doctors with one-time set-up links, deactivate/reactivate (signs out at once), reset links, audit log. No health data |
 | **Overview** | Welcome hero with quick-start, KPI cards, session risk distribution, dataset and model-quality charts |
 | **Screenings** | Guided form per condition, six selectable model families (recommended first), gauge, next steps, risk-factor chips, urgent-care notice, AHEAD Insight (Gemini), model interpretation. Diabetes estimates whether HbA1c is likely to be in the prediabetes range or higher; kidney asks short lifestyle and health questions with kidney tests optional; cardiovascular compares answers with survey respondents who reported a heart attack (not a 10-year risk). Every result is sorted into *See a doctor soon*, *At risk* or *Not flagged* (`ahead/triage.py`) |
@@ -143,8 +143,19 @@ streamlit run server.py
 ```
 
 Open the printed URL (usually `http://localhost:8501`). `server.py` is the Streamlit app plus three small HTTP
-routes (`/healthz`, `/auth/session`, `/auth/logout`) that keep you signed in across reloads with an HttpOnly
-cookie. (`streamlit run app.py` also works for quick UI work, but then a reload signs you out.)
+routes (`/healthz`, `/auth/session`, `/auth/logout`) and the background email sender.
+
+**Sign-in belongs to one tab.** Reloading keeps you signed in; closing the tab signs you out; a new tab, or typing
+the link again, shows the sign-in page. Each tab keeps a random secret in `sessionStorage`; the session cookie
+(HttpOnly, SameSite=Strict, one per tab: `ahead_s_<tab id>`) only works together with that tab's secret. AHEAD
+holds health data, so a shared or family computer must not stay signed in once the tab is closed.
+(`streamlit run app.py` also works for quick UI work, but then a reload signs you out.)
+
+**Emails** (Brevo's HTTPS API, `ahead/mailer.py`) are off until `BREVO_API_KEY` is set. When on: new patients
+confirm their email before the first sign-in, "Forgot your password?" emails a reset link, new doctors get their
+set-up link by email, and people are told when their password or email changes or their account is switched off
+or on. Emails never contain health information. They wait in an outbox table with retries, a daily budget
+(`AHEAD_EMAIL_DAILY_LIMIT`, default 250) and per-recipient caps; the text is deleted once sent.
 
 Create a patient account on the sign-in page. For the first admin, run
 `python scripts/create_account.py --email you@example.com --name "Your Name" --role Admin`; it asks for the
@@ -168,7 +179,7 @@ created on PostgreSQL, so they can't exist on the live site. Passwords are store
 
 Clinical uploads use the form's columns. Age and the optional columns (lab values, readings and the heart history questions) may be left out. An optional `DOB`, `DateOfBirth`, `date_of_birth`, or `Date of Birth` column (YYYY-MM-DD) fills age or the heart model's age category. Missing and invalid values appear per row and are not scored until corrected. Correct a row and save it in the review queue, then score eligible records. Clinicians can mark a record reviewed or excluded and add a note. The file is limited to 5,000 rows and 15 MB. The PDF and CSV contain entered data; handle downloads appropriately.
 
-The app is English only. No email, text or push notifications are sent. The map-search link does not show live appointment availability.
+The app is English only. Only account emails are sent (see Running the app); there are no text or push notifications. The map-search link does not show live appointment availability.
 
 ---
 
@@ -297,6 +308,8 @@ The live site runs on **Render** (web service, free plan, Frankfurt) with **Neon
 2. **Render:** New → Blueprint → pick this repository and branch. When asked, paste the Neon string into
    `DATABASE_URL`, and add `GEMINI_API_KEY` if you use the AI features. Secrets live only in Render.
 3. After the first deploy, set `AHEAD_PUBLIC_URL` to the site address (used in set-up and reset links).
+   For emails, add `BREVO_API_KEY` (a Brevo API key, v3) and optionally `AHEAD_EMAIL_FROM` (a sender verified
+   in Brevo; default `aurak.events.noreply@gmail.com`). Render's free plan blocks SMTP, so AHEAD uses the HTTPS API.
 4. **First admin** (from your computer, once): set `DATABASE_URL` in your terminal to the Neon string, then run
    `python scripts/create_account.py --email … --name … --role Admin`. Sign in with **Doctor / Admin** selected.
 5. Migrations run on every start. Before a deploy that adds a migration, create a Neon backup branch.
@@ -315,4 +328,6 @@ Health check: `GET /healthz` returns `{"status": "ok", "database": "ok"}`.
 | AI Assistant / Insight unavailable | Provide `GEMINI_API_KEY` (see above) |
 | Background images missing | `server.enableStaticServing = true` must stay in `.streamlit/config.toml` and the PNGs in `static/` |
 | Signed out after refreshing the page | Start with `streamlit run server.py` (not `app.py`). Sessions also end after 2 hours idle or 12 hours in total |
+| Signed out after opening a new tab | Expected: each tab signs in on its own, and closing a tab signs it out |
+| Confirmation or reset email doesn't arrive | Check Junk/Spam, then the admin's **Emails** tab (status and problem). Without `BREVO_API_KEY` no emails are sent |
 | Blank page after editing | Hard-refresh the browser (`Ctrl/Cmd + Shift + R`) |

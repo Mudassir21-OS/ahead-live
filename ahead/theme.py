@@ -577,8 +577,14 @@ def _token_block(t: dict) -> str:
     )
 
 
+_TAB_BOX_CSS = """<style>
+.st-key-ahead_tab_box { position:absolute !important; width:1px !important; height:1px !important; overflow:hidden !important;
+  opacity:0 !important; pointer-events:none !important; margin:0 !important; padding:0 !important; border:0 !important; }
+</style>"""
+
+
 def inject_global_css() -> None:
-    st.html(GLOBAL_CSS)
+    st.html(GLOBAL_CSS + _TAB_BOX_CSS)
 
 
 def inject_app_css() -> None:
