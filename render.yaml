@@ -23,6 +23,8 @@ services:
         sync: false
       - key: AHEAD_EMAIL_FROM      # sender verified in Brevo (default aurak.events.noreply@gmail.com)
         sync: false
+      - key: AHEAD_TASK_KEY        # optional: long random value; lets the GitHub Actions schedule send weekly summaries
+        sync: false
       - key: AHEAD_TRUST_PROXY     # proxy hops in front of the app on Render, for real visitor addresses
         value: "3"
       - key: AHEAD_DB_POOL_SIZE

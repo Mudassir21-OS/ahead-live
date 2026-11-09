@@ -173,7 +173,7 @@ class EmptyStateTests(MyPlanFixture):
         self.assertFalse([b for b in self.bodies(at) if "plan-hero" in b])
         self.assertIn("Metformin · 500 mg", self.html(at, 'class="dose-main"><strong>Metformin · 500 mg</strong><span>08:00'))
         self.assertIn(f"taken_{pid}_08:00", [b.key for b in at.button])
-        self.assertEqual([e.label for e in at.expander], ["Medication plans and 30-day history"])
+        self.assertEqual([e.label for e in at.expander], ["📅  Add reminders to my calendar", "Medication plans and 30-day history"])
 
     def test_a_draft_never_reaches_the_patient(self):
         self.link(); self.log()
@@ -370,7 +370,7 @@ class MedicineTests(MyPlanFixture):
     def test_history_expander_and_doses_this_week(self):
         self.approve()
         at = self.page()
-        (history,) = at.expander
+        (history,) = [e for e in at.expander if e.label == "Medication plans and 30-day history"]
         self.assertEqual(history.label, "Medication plans and 30-day history")
         self.assertIn("**Metformin · 500 mg** — active", [m.value for m in history.markdown])
         self.assertIn("Times: 08:00, 20:00 · Days: Mon, Tue, Wed, Thu, Fri, Sat, Sun", [m.value for m in history.markdown])

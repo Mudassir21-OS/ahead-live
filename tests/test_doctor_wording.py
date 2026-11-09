@@ -339,7 +339,7 @@ class DoctorWordingTests(unittest.TestCase):
         self.assertFalse(patient.success)
         for at in (patient, doctor):
             text = self.text(at)
-            self.assertIn("<h2>Notifications</h2>", "\n".join(h.proto.body for h in at.get("html")))
+            self.assertIn("<h2>Emails</h2>", "\n".join(h.proto.body for h in at.get("html")))   # Phase 2b: real email choices
             self.assertNotIn("Display preferences", text)
             appearance = next(t for t in at.tabs if t.label == "Appearance")
             self.assertEqual(len(appearance.columns), 2)

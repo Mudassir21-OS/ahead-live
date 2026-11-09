@@ -13,6 +13,7 @@ import streamlit as st
 
 from ahead.components import current_user,go_to,markdown_literal,page_header,section_heading,track_panel
 from ahead.config import DISEASES
+from ahead.pages.calendar_panel import render_calendar_panel
 from ahead.pages.settings import open_care_team
 from ahead.platform_data import (doctors_for,local_today,mark_dose,notify,notify_recheck_due,open_doses,plans,
                                  prevention_plans,prevention_progress,scheduled_doses,to_local)
@@ -97,6 +98,9 @@ def render_medications():
             left,right=st.columns(2)
             with left:_note(plan)
             with right:_recheck(plan,progress['recheck'],urgent)
+    if any(p['status']=='active' for p in medicines):
+        with st.expander('📅  Add reminders to my calendar'):
+            render_calendar_panel(owner,'plan_calendar')
     if medicines:_history(owner,medicines,today)
 
 
@@ -237,7 +241,7 @@ def _medicines(owner,medicines,today):
     with st.container(key='plan_medicines'):
         if not doses:st.caption('No doses are scheduled today.')
         for dose in doses:_dose(owner,dose,status[dose['plan_id']],latest.get(dose['plan_id'],''))
-    st.caption('A due dose appears in the in-app notification center. External push, email and SMS reminders are not configured.')
+    st.caption('A due dose appears in your AHEAD notifications. For reminders when AHEAD is closed, add them to your calendar below.')
 
 
 def _dose(owner,dose,plan_status,latest=''):

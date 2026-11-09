@@ -11,7 +11,8 @@ import streamlit as st
 
 from ahead.components import current_user, go_to, logout, markdown_literal, pref, page_header, username_hint
 from ahead.theme import APPEARANCE_OPTIONS, appearance_mode
-from ahead import accounts
+from ahead import accounts, alerts, mailer
+from ahead.pages.calendar_panel import render_calendar_panel
 from ahead.session import request_ip
 from ahead.storage import change_password, delete_records, delete_screenings, update_profile, update_preferences
 from ahead.platform_data import doctors_for, grant_doctor, revoke_doctor, ai_consent, plans, prevention_plans
@@ -183,14 +184,36 @@ def _care_team(user: dict, focus: bool = False) -> None:
                 revoke_doctor(user['id'],doctor['id']);st.toast('Access removed.');st.rerun()
 
 
+def _emails_panel(user: dict) -> None:
+    """Which optional emails this person gets (ahead/alerts.py). Account emails (confirm, reset, security notices)
+    can't be switched off. In-app notifications are always on."""
+    _panel("Emails", "Choose which optional emails AHEAD sends you. Emails never include results, medicine names "
+                     "or patient names: they say that something changed and link to AHEAD.")
+    if not mailer.enabled():
+        st.caption("Emails are switched off on this server right now. Your choices are saved for when they're switched on.")
+    saved = alerts.email_prefs(user["id"])
+    with st.container(key="settings_rows"):
+        for name in alerts.emails_for(user["role"]):
+            _, title, copy = alerts.EMAILS[name]
+            left, right = st.columns([0.86, 0.14])
+            with left:
+                st.html(_row("✉", title, copy))
+            with right:
+                st.toggle(title, value=saved[name], key=f"email_pref_{name}", label_visibility="collapsed",
+                          on_change=lambda n=name: alerts.set_email_pref(user["id"], n, st.session_state[f"email_pref_{n}"]))
+    st.caption("Sign-up confirmation, password reset and security notices (password or email changed) are always sent.")
+
+
 def _preferences_tab(care_first: bool = False) -> None:
     user=st.session_state.get('user') or {}
     patient=user.get('role')=='Patient'
     if patient and care_first:   # the patient came to share a result: Care team access leads the tab
         _care_team(user, focus=True)
-    _panel("Notifications", "Notification delivery is not available in this prototype.")
-    with st.container(key="settings_rows"):
-        st.info("No email, text or push notifications are sent.")
+    if user.get("role") in ("Patient", "Doctor"):
+        _emails_panel(user)
+    if patient:
+        _panel("Reminders in my calendar", "Medicine reminders in your phone or computer calendar, even when AHEAD is closed.")
+        render_calendar_panel(user["id"], "settings_calendar", compact=True)
 
     _panel("Data & privacy", "Screening history and doctor review records are saved in the configured local database.")
     with st.container(key="settings_rows_privacy"):

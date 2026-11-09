@@ -4,7 +4,7 @@ from collections import Counter
 from datetime import date, datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
-from ahead import prevention
+from ahead import alerts, prevention
 from ahead.config import DISEASES
 from ahead import db as database
 from ahead.storage import connection, init_db
@@ -100,8 +100,9 @@ def grant_doctor(patient_id, email):
         doctor = db.execute("SELECT id FROM users WHERE email=? AND role='Doctor'",(email.strip().lower(),)).fetchone()
         if not doctor:
             return False
-        db.execute("INSERT OR IGNORE INTO care_access(patient_id,doctor_id,created_at) VALUES(?,?,?)",(patient_id,doctor['id'],now()))
-        return True
+        added=db.execute("INSERT OR IGNORE INTO care_access(patient_id,doctor_id,created_at) VALUES(?,?,?)",(patient_id,doctor['id'],now())).rowcount
+    if added:alerts.doctor_linked(patient_id,doctor['id'])   # linking the same doctor again says nothing new
+    return True
 
 
 def revoke_doctor(patient_id, doctor_id):
@@ -259,6 +260,7 @@ def save_plan(doctor_id, patient_id, plan, plan_id=None):
         db.execute("INSERT INTO medication_audit(plan_id,doctor_id,action,details_json,created_at) VALUES(?,?,?,?,?)",(plan_id,doctor_id,action,json.dumps(values),stamp))
     notify(patient_id,'medication','Medication plan updated',f"Your doctor {action} a plan for {values['name']}."+(
         " The new schedule starts tomorrow; today's doses stay as they were." if later else ''),'medications',f'plan-{plan_id}-{stamp}')
+    alerts.plan_changed(patient_id,'medication')
     return plan_id
 
 
@@ -277,6 +279,7 @@ def plan_status(doctor_id, plan_id, status):
         db.execute("UPDATE medication_plans SET status=?,updated_at=? WHERE id=?",(status,now(),plan_id))
         db.execute("INSERT INTO medication_audit(plan_id,doctor_id,action,details_json,created_at) VALUES(?,?,?,?,?)",(plan_id,doctor_id,status,'{}',now()))
     notify(row['patient_id'],'medication','Medication plan status',f"{row['name']} is now {status}.",'medications',f'plan-status-{plan_id}-{status}-{now()}')
+    alerts.plan_changed(row['patient_id'],'medication')
     return True
 
 
@@ -529,6 +532,7 @@ def approve_prevention_plan(doctor_id, patient_id, plan, plan_id=None):
            f"Your doctor sent you a {DISEASES[values['disease']]['long_label']} prevention plan with {count} target{'s'*(count!=1)}."
            +(' It replaces your earlier plan.' if replaced else '')+(' Your tracker goals now match it.' if goals else '')
            +f" Re-check on {prevention.date_text(values['recheck_date'])}.",'medications',f'prevention-{plan_id}-approved')
+    alerts.plan_changed(patient_id,'prevention')
     return plan_id
 
 
@@ -563,6 +567,7 @@ def update_prevention_plan(doctor_id, plan_id, plan):
             _sync_goals(db,row['patient_id'],values['targets'])
     notify(row['patient_id'],'plan','Prevention plan updated','Your doctor updated your prevention plan. Open My plan to see the targets.',
            'medications',f'prevention-{plan_id}-edited-{stamp}')
+    alerts.plan_changed(row['patient_id'],'prevention')
     return True
 
 
@@ -596,6 +601,7 @@ def prevention_plan_status(doctor_id, plan_id, status):
         if status=='active':
             _sync_goals(db,row['patient_id'],json.loads(row['targets_json']))
     notify(row['patient_id'],'plan',*_PREVENTION_NOTES[status],'medications',f'prevention-status-{plan_id}-{status}-{stamp}')
+    alerts.plan_changed(row['patient_id'],'prevention')
     return True
 
 

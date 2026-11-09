@@ -331,6 +331,14 @@ h1, h2, h3, h4, h5, h6 { color: var(--ahead-title); }
     box-shadow: 0 6px 16px rgba(11,127,139,0.22) !important;
 }
 [data-testid="stMain"] [data-testid^="stBaseButton-primary"]:hover { filter: brightness(1.06); }
+/* link buttons (st.link_button) are links, not buttons: give them the primary button look, white text included */
+[data-testid="stMain"] [data-testid^="stBaseLinkButton-primary"] {
+    background: linear-gradient(135deg, var(--ahead-accent), var(--ahead-accent-strong)) !important; border: none !important;
+    border-radius: 10px !important; min-height: 42px; box-shadow: 0 6px 16px rgba(11,127,139,0.22) !important;
+}
+[data-testid="stMain"] [data-testid^="stBaseLinkButton-primary"],
+[data-testid="stMain"] [data-testid^="stBaseLinkButton-primary"] p { color: #ffffff !important; font-weight: 640 !important; }
+[data-testid="stMain"] [data-testid^="stBaseLinkButton-primary"]:hover { filter: brightness(1.06); }
 [data-testid="stMain"] [data-testid^="stBaseButton-primary"]:disabled { filter: none; opacity: 0.55; }
 [data-testid="stMain"] [data-testid^="stBaseButton-secondary"] {
     background: var(--ahead-card) !important; color: var(--ahead-title) !important; border: 1px solid var(--ahead-border) !important;

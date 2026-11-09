@@ -157,6 +157,23 @@ set-up link by email, and people are told when their password or email changes o
 or on. Emails never contain health information. They wait in an outbox table with retries, a daily budget
 (`AHEAD_EMAIL_DAILY_LIMIT`, default 250) and per-recipient caps; the text is deleted once sent.
 
+**Notifications and optional emails** (`ahead/alerts.py`). Doctors have a Notifications page too: a new linked
+patient, and a linked patient's saved result that AHEAD marks *urgent* or *at risk*. With emails on, people can also
+get (each switchable in **Settings → Preferences → Emails**): patients, "your doctor updated your medication /
+prevention plan" (at most one an hour); doctors, "a linked patient has a new result to review" (at most one an hour)
+and "a patient added you as their doctor"; anyone, an opt-in weekly "you have N updates". These emails never name a
+patient, a medicine or a result. Per-dose reminders, high-risk alerts to the patient and food nudges are never emailed.
+
+**Weekly summary timer.** Render's free plan has no cron, so `.github/workflows/weekly-summary.yml` calls
+`POST /tasks/weekly` on Sundays. It needs `AHEAD_TASK_KEY` (24+ random characters) in Render, and the repository
+secrets `AHEAD_URL` and `AHEAD_TASK_KEY`. GitHub runs schedules only from the repository's default branch.
+
+**Calendar reminders** (`ahead/calendar_feed.py`). On **My plan → Add reminders to my calendar** (also in Settings) a
+patient gets a private link, `webcal://<site>/calendar/<token>.ics`, that phones and computers subscribe to, so each
+dose time becomes a calendar reminder that follows the doctor's changes. There's also a one-off `.ics` download.
+Events say "AHEAD medicine reminder" unless the patient chooses to show medicine names. "Make a new link" stops the
+old one.
+
 Create a patient account on the sign-in page. For the first admin, run
 `python scripts/create_account.py --email you@example.com --name "Your Name" --role Admin`; it asks for the
 password (shown as `*`). The admin then adds doctors from **Accounts & Security**.

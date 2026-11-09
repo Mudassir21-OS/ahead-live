@@ -473,6 +473,15 @@ def notify(user, kind):
         log.exception("could not queue the %s email", kind)
 
 
+def site_url_for(request):
+    """site_url() for a plain HTTP route (no Streamlit page): AHEAD_PUBLIC_URL, else the request's own address."""
+    configured = os.environ.get("AHEAD_PUBLIC_URL", "").strip().rstrip("/")
+    if configured:
+        return configured
+    proto = request.headers.get("x-forwarded-proto", request.url.scheme).split(",")[0].strip()
+    return f"{proto}://{request.headers.get('host', request.url.netloc)}"
+
+
 def site_url():
     """The public address used in emailed links (AHEAD_PUBLIC_URL; the browser's address as a fallback)."""
     configured = os.environ.get("AHEAD_PUBLIC_URL", "").strip().rstrip("/")

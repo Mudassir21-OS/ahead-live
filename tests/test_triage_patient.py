@@ -237,7 +237,7 @@ class PatientTriageTests(unittest.TestCase):
             self.assertIn("Add your doctor's AHEAD account email to share your saved screening results with them.",
                           [i.value for i in at.info])
         else:
-            self.assertEqual(titles, ["Notifications", "Data & privacy", "Care team access"])
+            self.assertEqual(titles, ["Emails", "Reminders in my calendar", "Data & privacy", "Care team access"])
 
     def test_doctor_screening_uses_doctor_wording_and_no_share_line(self):
         at = self.screen(self.doctor, scored("diabetes", 0.01, HbA1c_level=7.1))

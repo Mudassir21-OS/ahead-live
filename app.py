@@ -102,7 +102,7 @@ user = current_user()
 # SIDEBAR
 # =============================================================================
 
-patient_only = {'wellness','food','medications','notifications'}
+patient_only = {'wellness','food','medications'}   # Notifications: patients and, since Phase 2b, doctors
 if user["is_admin"]:
     # Admins manage accounts only: no screenings, records or patient pages (least access).
     visible_nav = [("admin", "Accounts & Security", "settings.svg", False)]
@@ -130,7 +130,9 @@ with st.sidebar:
 
     with st.container(key="sidebar_nav"):
         unread = 0
-        if not user['is_doctor'] and not user['is_admin']:
+        if user['is_doctor']:
+            unread=sum(not n['read_at'] for n in notifications(st.session_state.user['id']))
+        elif not user['is_admin']:
             # Reminders are checked at most once a minute here (each check is ~10 queries, and this runs on
             # every click); the Notifications and My plan pages still check each time they open.
             now = time.monotonic()

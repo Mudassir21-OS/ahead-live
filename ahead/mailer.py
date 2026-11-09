@@ -112,8 +112,13 @@ def _text(heading, paragraphs, button=None, footer=""):
     return "\n".join(lines)
 
 
-def compose(kind, name="", link="", site=""):
-    """(subject, text, html) for one kind of account email. No health data in any of them."""
+OPT_OUT = "You can turn these emails off in AHEAD under Settings → Preferences → Emails."
+
+
+def compose(kind, name="", link="", site="", detail=None):
+    """(subject, text, html) for one kind of email. No health data, medicine names or patient names in any of them.
+
+    detail: the one non-health fact a notice needs (which kind of plan changed; how many updates are waiting)."""
     hello = f"Hello {name.strip()}," if (name or "").strip() else "Hello,"
     not_you = "If this wasn't you, you can ignore this email."
     if kind == "verify":
@@ -148,6 +153,27 @@ def compose(kind, name="", link="", site=""):
         subject, heading = "Your AHEAD account is active again", "Your account is active again"
         body = [hello, "An AHEAD administrator switched your account back on. You can sign in again."]
         button, footer = ("Sign in", site) if site else None, ""
+    elif kind == "plan_updated":
+        plan = "prevention plan" if detail == "prevention" else "medication plan"
+        subject, heading = f"Your doctor updated your {plan}", f"Your {plan} was updated"
+        body = [hello, f"Your doctor made a change to your {plan} in AHEAD. Sign in to see what changed."]
+        button, footer = ("Open AHEAD", site) if site else None, OPT_OUT
+    elif kind == "doctor_review":
+        subject, heading = "A linked patient has a new result to review", "New result to review"
+        body = [hello, "A patient who linked their AHEAD account to you saved a screening result that AHEAD marked "
+                       "for attention. Sign in to see it under Advanced Analytics & Patient Intelligence."]
+        button, footer = ("Open AHEAD", site) if site else None, OPT_OUT
+    elif kind == "doctor_linked":
+        subject, heading = "A patient added you as their doctor", "A patient added you as their doctor"
+        body = [hello, "A patient added your AHEAD account to their care team, so you can now see the results they "
+                       "choose to save. Sign in to see who it is."]
+        button, footer = ("Open AHEAD", site) if site else None, OPT_OUT
+    elif kind == "weekly":
+        count = int(detail or 0)
+        updates = f"{count} update{'s' if count != 1 else ''}"
+        subject, heading = f"You have {updates} in AHEAD", "Your week in AHEAD"
+        body = [hello, f"You have {updates} waiting in AHEAD from the last 7 days. Sign in to read them."]
+        button, footer = ("Open AHEAD", site) if site else None, OPT_OUT
     else:
         raise ValueError(f"unknown email kind {kind}")
     return subject, _text(heading, body, button, footer), _html(heading, body, button, footer)
@@ -157,7 +183,7 @@ def compose(kind, name="", link="", site=""):
 # THE OUTBOX
 # =============================================================================
 
-def queue(to_email, kind, user_id=None, name="", link="", site="", priority=None):
+def queue(to_email, kind, user_id=None, name="", link="", site="", priority=None, detail=None):
     """Save an email for sending. Returns its outbox id, or None when emails are off or the recipient's cap is reached."""
     to_email = (to_email or "").strip().lower()
     if not enabled() or "@" not in to_email:
@@ -165,7 +191,7 @@ def queue(to_email, kind, user_id=None, name="", link="", site="", priority=None
     if priority is None:
         priority = PRIORITY_ACCOUNT if kind in ("verify", "reset", "setup") else PRIORITY_NOTICE
     now = _now()
-    subject, text, html = compose(kind, name, link, site)
+    subject, text, html = compose(kind, name, link, site, detail)
     with connection() as db:
         hour = db.execute("SELECT COUNT(*) FROM email_outbox WHERE to_email=? AND created_at>=?",
                           (to_email, _stamp(now - timedelta(hours=1)))).fetchone()[0]
@@ -184,6 +210,13 @@ def queue(to_email, kind, user_id=None, name="", link="", site="", priority=None
         start_background_sender()    # normally already running (server.py); covers `streamlit run app.py`
         _wake.set()
     return email_id
+
+
+def recently_queued(user_id, kind, within):
+    """True when an email of this kind went into the outbox for this person within the given timedelta."""
+    with connection() as db:
+        return db.execute("SELECT 1 FROM email_outbox WHERE user_id=? AND kind=? AND created_at>=? LIMIT 1",
+                          (user_id, kind, _stamp(_now() - within))).fetchone() is not None
 
 
 def sent_today():

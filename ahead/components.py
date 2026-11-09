@@ -125,9 +125,12 @@ def record_screening(disease: str, model_name: str, probability: float, predicti
     )
     owner = (st.session_state.get("user") or {}).get("id")
     if owner:
-        save_screening(owner, disease, model_name, probability, prediction, threshold, values)
+        screening_id = save_screening(owner, disease, model_name, probability, prediction, threshold, values)
         from ahead.platform_data import event
         event(owner,'assessment_completed')
+        if st.session_state.user.get("role") == ROLE_PATIENT:   # linked doctors hear about results that need review
+            from ahead.alerts import new_result
+            new_result(owner, screening_id, disease, values, probability, threshold)
 
 
 # =============================================================================

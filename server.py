@@ -6,6 +6,8 @@ Routes added next to Streamlit:
   GET  /healthz       database check for Render's health check and wake-up pings
   POST /auth/session  swaps a one-time sign-in code for this tab's HttpOnly session cookie
   POST /auth/logout   ends this tab's session and deletes its cookie (other tabs keep theirs)
+  GET  /calendar/<token>.ics  a patient's private medicine-reminder calendar (subscribe or download)
+  POST /tasks/weekly  weekly summary emails; needs the X-AHEAD-Task-Key header (GitHub Actions calls it)
 
 It also starts the background email sender (ahead/mailer.py) when BREVO_API_KEY is set, and loads the
 models in the background so the first screening after a restart doesn't wait (AHEAD_WARM_UP=0 turns it off).
@@ -13,6 +15,7 @@ models in the background so the first screening after a restart doesn't wait (AH
 `streamlit run app.py` still works for quick local UI work, but sign-ins then don't survive a reload.
 """
 
+import hmac
 import json
 import logging
 import os
@@ -25,7 +28,7 @@ from starlette.middleware import Middleware
 from starlette.responses import JSONResponse, Response
 from starlette.routing import Route
 
-from ahead import accounts, db, mailer
+from ahead import accounts, alerts, calendar_feed, db, mailer
 from ahead.storage import init_db
 
 log = logging.getLogger("ahead.server")
@@ -108,6 +111,28 @@ async def auth_logout(request):
     return response
 
 
+async def calendar(request):
+    """GET /calendar/<token>.ics: a patient's private medicine-reminder calendar (ahead/calendar_feed.py)."""
+    token = request.path_params.get("token", "").removesuffix(".ics")
+    body = await run_in_threadpool(calendar_feed.ics_for_token, token, accounts.site_url_for(request))
+    if body is None:
+        return Response("Not found", status_code=404, media_type="text/plain")
+    return Response(body, media_type="text/calendar; charset=utf-8",
+                    headers={"cache-control": "private, max-age=900", "content-disposition": 'inline; filename="ahead.ics"'})
+
+
+async def weekly_task(request):
+    """POST /tasks/weekly with header X-AHEAD-Task-Key: the weekly summary emails (a GitHub Actions schedule calls it,
+    since Render's free plan has no cron). Without AHEAD_TASK_KEY set on the server the route doesn't exist."""
+    key = os.environ.get("AHEAD_TASK_KEY", "").strip()
+    if len(key) < 24:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    if not hmac.compare_digest(request.headers.get("x-ahead-task-key", ""), key):
+        return JSONResponse({"error": "forbidden"}, status_code=403)
+    result = await run_in_threadpool(alerts.weekly_summaries)
+    return JSONResponse(result)
+
+
 class SecurityHeaders:
     """Headers on every HTTP response. A full Content-Security-Policy is a later step (Streamlit needs testing)."""
 
@@ -174,6 +199,8 @@ app = st.App(
     "app.py",
     routes=[Route("/healthz", healthz, methods=["GET", "HEAD"]),
             Route("/auth/session", auth_session, methods=["POST"]),
-            Route("/auth/logout", auth_logout, methods=["POST"])],
+            Route("/auth/logout", auth_logout, methods=["POST"]),
+            Route("/calendar/{token}", calendar, methods=["GET", "HEAD"]),
+            Route("/tasks/weekly", weekly_task, methods=["POST"])],
     middleware=[Middleware(SecurityHeaders)],
 )

@@ -176,9 +176,11 @@ def get_user(user_id):
 
 
 def update_preferences(user_id, preferences):
+    """Save preference groups ("toggles", "appearance", "email", ...). Groups not given are kept."""
     with connection() as db:
-        db.execute("UPDATE users SET preferences_json=? WHERE id=?",
-                   (json.dumps(preferences), user_id))
+        row = db.execute("SELECT preferences_json FROM users WHERE id=?", (user_id,)).fetchone()
+        merged = {**json.loads((row["preferences_json"] if row else None) or "{}"), **preferences}
+        db.execute("UPDATE users SET preferences_json=? WHERE id=?", (json.dumps(merged), user_id))
 
 
 def update_profile(user_id, name, email, institution):

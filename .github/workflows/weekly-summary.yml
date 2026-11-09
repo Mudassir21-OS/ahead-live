@@ -1,0 +1,38 @@
+# Weekly summary emails for AHEAD. Render's free plan has no cron, so GitHub runs this on a schedule and it
+# asks the live site to send them (POST /tasks/weekly). Free on GitHub Actions.
+#
+# Set up once (repo → Settings → Secrets and variables → Actions → New repository secret):
+#   AHEAD_URL       https://ahead-hepa.onrender.com
+#   AHEAD_TASK_KEY  the same long random value as AHEAD_TASK_KEY in Render → ahead → Environment
+# GitHub only runs schedules from the repository's DEFAULT branch, so this file must be on that branch.
+# "Run workflow" on the Actions tab runs it by hand (the site never sends one person two in 6 days).
+
+name: Weekly summary emails
+
+on:
+  schedule:
+    - cron: "17 5 * * 0"     # Sundays 05:17 UTC = 09:17 in the UAE
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  weekly:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Wake the site (Render free sleeps after 15 idle minutes)
+        run: |
+          for i in 1 2 3 4 5 6; do
+            curl -fsS --max-time 60 "$AHEAD_URL/healthz" && exit 0
+            sleep 20
+          done
+          exit 1
+        env:
+          AHEAD_URL: ${{ secrets.AHEAD_URL }}
+      - name: Send the weekly summaries
+        run: |
+          curl -fsS --max-time 120 -X POST "$AHEAD_URL/tasks/weekly" -H "X-AHEAD-Task-Key: $AHEAD_TASK_KEY"
+        env:
+          AHEAD_URL: ${{ secrets.AHEAD_URL }}
+          AHEAD_TASK_KEY: ${{ secrets.AHEAD_TASK_KEY }}
