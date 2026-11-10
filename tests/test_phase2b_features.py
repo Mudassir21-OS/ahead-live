@@ -218,8 +218,9 @@ class DoctorNoticeTests(Base):
         self.assertEqual(len([n for n in notifications(self.d["id"]) if n["type"] == "review"]), 2)
         self.assertEqual(len(self.mails("doctor_review")), 2)
 
-    def test_a_result_that_is_not_flagged_says_nothing(self):
+    def test_a_result_that_is_not_flagged_says_nothing_to_an_attention_only_doctor(self):
         grant_doctor(self.p["id"], "d@test.com")
+        alerts.set_review_scope(self.d["id"], "attention")   # Phase 3a: every result is the default (test_phase3a_reviews)
         mailer.sent_messages.clear()
         self.assertEqual(self._result(flagged=False), [])
         self.assertEqual([n["type"] for n in notifications(self.d["id"])], ["care_team"])

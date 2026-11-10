@@ -26,7 +26,15 @@ ACTION_LABELS = {
 }
 EMAIL_LABELS = {"verify": "Confirm email", "reset": "Password reset", "setup": "Account set-up",
                 "password_changed": "Password changed notice", "email_changed": "Email changed notice",
-                "deactivated": "Account switched off", "reactivated": "Account switched on"}
+                "deactivated": "Account switched off", "reactivated": "Account switched on",
+                "plan_updated": "Plan changed", "doctor_review": "Result to review", "doctor_review_more": "More results (follow-up)",
+                "doctor_linked": "New linked patient", "weekly": "Weekly summary"}
+
+
+def _scheduled(row):
+    """A follow-up waiting for its hour (queued earlier, never tried, due later than it was queued)."""
+    return row["status"] == "pending" and row.get("attempts", 0) == 0 and \
+        (row.get("next_attempt_at") or "") > (row["created_at"] or "")
 
 
 def _when(stamp):
@@ -161,7 +169,8 @@ def _emails():
         return
     st.dataframe(pd.DataFrame([{
         "Queued": _when(r["created_at"]), "To": r["to_email"], "Email": EMAIL_LABELS.get(r["kind"], r["kind"]),
-        "Status": r["status"].capitalize(), "Tries": r["attempts"], "Sent": _when(r["sent_at"]),
+        "Status": "Scheduled" if _scheduled(r) else r["status"].capitalize(), "Tries": r["attempts"],
+        "Sent": f"Due {_when(r['next_attempt_at'])}" if _scheduled(r) else _when(r["sent_at"]),
         "Problem": r["last_error"][:120] or "—",
     } for r in rows]), hide_index=True, width="stretch")
     st.caption("The latest 100 emails. Only who, what kind and whether it went are kept; the text is deleted once sent. "

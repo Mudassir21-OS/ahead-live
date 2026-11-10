@@ -132,8 +132,10 @@ def _no_plan(owner):
             'vegetables and sleeping well. Your plan shows here once they approve it.',calm=True)
     names=sorted((d['name'] for d in doctors_for(owner)),key=str.lower)
     if names:
-        st.caption(f"Your linked doctor{'s' if len(names)>1 else ''}, {markdown_literal(_listed(names))}, can see your "
-                   'saved screenings and can set up a plan with you.')
+        with st.container(key='plan_doctors_row',horizontal=True,vertical_alignment='center'):
+            st.caption(f"Your linked doctor{'s' if len(names)>1 else ''}, {markdown_literal(_listed(names))}, can see your "
+                       'saved screenings and can set up a plan with you.')
+            if st.button('Add another doctor',key='plan_add_doctor',type='tertiary',icon=':material/person_add:'):open_care_team()
     else:
         with st.container(key='plan_share_row',horizontal=True,vertical_alignment='center'):
             if st.button('Share with your doctor',key='plan_share',type='primary'):open_care_team()

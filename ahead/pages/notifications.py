@@ -11,18 +11,26 @@ def render_notifications():
     owner=st.session_state.user['id']
     doctor=st.session_state.user.get('role')=='Doctor'
     page_header('Care team updates' if doctor else 'Patient updates','Notifications',
-                'New linked patients and results to review.' if doctor else 'Reminders and changes for your account.')
+                'New linked patients and new results from them.' if doctor else 'Reminders and changes for your account.')
     if not doctor:refresh_patient_notifications(owner)
     rows=notifications(owner)
     a,b=st.columns(2)
     with a:metric('Unread',sum(not r['read_at'] for r in rows),'Updates waiting for your attention','#8B5CF6','◉')
     with b:metric('All notifications',len(rows),'Your personal update center','#2563EB','◷')
-    unread_only=st.toggle('Show unread only',value=False)
+    with st.container(horizontal=True,gap='medium'):
+        unread_only=st.toggle('Show unread only',value=False)
+        # Doctors who hear about every result can still see the ones AHEAD marks for attention on their own.
+        attention_only=doctor and st.toggle('Needs attention only',value=False,key='notifications_attention_only')
+        if st.button('Email and notice settings',key='notifications_settings',type='tertiary',icon=':material/tune:'):
+            from ahead.pages.settings import open_preferences
+            open_preferences()
     if unread_only:rows=[r for r in rows if not r['read_at']]
-    if not rows:st.info('No notifications yet. New linked patients and results to review appear here.' if doctor else 'No notifications yet. Reminders appear here while you use the app.')
+    if attention_only:rows=[r for r in rows if r['type']=='review']
+    if not rows:st.info('No notifications yet. New linked patients and their new results appear here.' if doctor else 'No notifications yet. Reminders appear here while you use the app.')
     for row in rows:
         with st.container(border=True):
-            st.write(('🔵 ' if not row['read_at'] else '')+f"**{row['title']}** · {row['created_at'][:16]}")
+            flag='⚠️ ' if row['type']=='review' else ''   # urgent / at-risk results stand out among lower-risk ones
+            st.write(('🔵 ' if not row['read_at'] else '')+flag+f"**{row['title']}** · {row['created_at'][:16]}")
             st.caption(row['description'])
             c1,c2=st.columns(2)
             if not row['read_at'] and c1.button('Mark as read',key=f"read_{row['id']}"):

@@ -15,7 +15,7 @@ import streamlit as st
 from ahead.components import current_user, go_to, pref
 from ahead.config import ICONS_DIR, NAV_ITEMS
 from ahead.platform_data import local_now
-from ahead.resources import chat_reply, gemini_available, gemini_error_message, icon_uri, static_url, transcribe_audio
+from ahead.resources import chat_reply, chat_stream, gemini_available, gemini_error_message, icon_uri, static_url, transcribe_audio
 from ahead.theme import is_dark, tokens
 
 WELCOME = "Hi! I'm AHEAD Assistant. What would you like to know about AHEAD or its screening conditions?"
@@ -287,6 +287,33 @@ def _reply(history: list, is_doctor: bool = False) -> str:
     return chat_reply(DOCTOR_SYSTEM_PROMPT if is_doctor else SYSTEM_PROMPT, turns)
 
 
+def _reply_stream(history: list, is_doctor: bool = False):
+    """_reply, streamed piece by piece (same turns and instructions)."""
+    turns = [{"role": "user" if m["role"] == "user" else "model", "text": m["content"]} for m in history[-12:]]
+    return chat_stream(DOCTOR_SYSTEM_PROMPT if is_doctor else SYSTEM_PROMPT, turns)
+
+
+def _safe_stream(pieces):
+    """Yield the answer as it arrives. A failure never shows a traceback: before any text it becomes the usual
+    message; part way, the text so far stays and a short note follows."""
+    wrote = False
+    try:
+        for piece in pieces:
+            wrote = True
+            yield piece
+    except Exception as exc:
+        message = gemini_error_message(exc)
+        yield f"\n\n_{message}_" if wrote else message
+
+
+def _first_and_rest(pieces):
+    """Wait (under the spinner) for the first piece, then hand back a stream that starts with it."""
+    import itertools
+    pieces = iter(pieces)
+    first = next(pieces, None)
+    return itertools.chain([] if first is None else [first], pieces)
+
+
 def _append(role: str, content: str, voice: bool = False) -> None:
     # Asia/Dubai like every other page; datetime.now() would follow the server clock (UTC when hosted).
     st.session_state.chat_messages.append({"role": role, "content": content, "time": local_now(), "voice": voice})
@@ -414,19 +441,21 @@ def render_assistant() -> None:
         with st.chat_message("user"):
             st.markdown(prompt)
         with st.chat_message("assistant", avatar=robot):
-            with st.spinner("Thinking…"):
-                answer = None if user["is_doctor"] else _status_answer(prompt, st.session_state.user["id"])
-                if not answer and gemini_available():
-                    try:
-                        answer = _reply(st.session_state.chat_messages, user["is_doctor"])
-                    except Exception as exc:
-                        answer = gemini_error_message(exc)
+            answer = None if user["is_doctor"] else _status_answer(prompt, st.session_state.user["id"])
+            if not answer and gemini_available():
+                # Stream: the spinner shows only until the first words arrive, then the answer writes itself out.
+                with st.spinner("Thinking…"):
+                    stream = _first_and_rest(_safe_stream(_reply_stream(st.session_state.chat_messages, user["is_doctor"])))
+                answer = st.write_stream(stream)
+                if not isinstance(answer, str):
+                    answer = "".join(map(str, answer or []))
+            else:
                 if not answer:
                     answer = _local_answer(prompt, user["is_doctor"]) or (
                         "AHEAD Assistant is not available right now (no Gemini API key or the service could not be "
                         "reached). Try one of the suggested questions above — the screening tools work normally without me."
                     )
-            st.markdown(answer)
+                st.markdown(answer)
         _append("assistant", answer)
         if spoken and pref("speak_replies"):
             st.session_state.speak_now = answer

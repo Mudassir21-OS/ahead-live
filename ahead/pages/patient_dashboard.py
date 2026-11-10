@@ -5,7 +5,7 @@ import pandas as pd
 import streamlit as st
 from ahead.components import condition_cards, empty_state, go_to, section_heading, disclaimer, track_panel
 from ahead.config import DISEASES
-from ahead.platform_data import lifestyle_history,get_goals,challenge_days,open_doses,local_today,to_local
+from ahead.platform_data import lifestyle_history,get_goals,challenge_days,open_doses,local_today,to_local,doctors_for
 from ahead.screening import share_with_doctor
 from ahead.storage import load_screenings
 from ahead.triage import open_urgent, track_text, triage_saved
@@ -44,6 +44,21 @@ def _urgent_banner(assessments,today):
         share_with_doctor('home_share')
 
 
+def _care_team_row(owner):
+    """Who can see this patient's results, with the way to add a doctor one click away (it lives in Settings)."""
+    from ahead.components import markdown_literal
+    from ahead.pages.settings import open_care_team
+    names=sorted((d['name'] for d in doctors_for(owner)),key=str.lower)
+    with st.container(key='home_care_team',horizontal=True,vertical_alignment='center',horizontal_alignment='distribute'):
+        if names:
+            st.caption(f"🩺 Your care team: {markdown_literal(', '.join(names))}. They can see the screenings you save.")
+            label,kind='Add a doctor','secondary'
+        else:
+            st.caption('🩺 No doctor can see your results yet. Add your doctor so they can review your screenings.')
+            label,kind='Add your doctor','primary'
+        if st.button(label,key='home_add_doctor',type=kind,icon=':material/person_add:'):open_care_team()
+
+
 def render_patient_dashboard():
     owner=st.session_state.user['id']
     records=lifestyle_history(owner); goals=get_goals(owner); days=challenge_days(owner)
@@ -62,6 +77,7 @@ def render_patient_dashboard():
     for col,(icon,label,value,total,color,page,note,action) in zip(st.columns(4),cards):
         with col:
             if summary_card(f'dashboard_{icon}',label,value,note,action,color,icon,total):go_to(page)
+    _care_team_row(owner)
     section_heading('Your wellness, at a glance','Small check-ins help you see how your habits change.')
     if not records:
         empty_state('◉','Your story starts with one check-in','Record your lifestyle to unlock your score, trends and personal progress.')

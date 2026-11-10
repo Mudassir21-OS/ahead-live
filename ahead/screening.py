@@ -867,8 +867,11 @@ def render_predictor(disease: str) -> bool:
 </div>
 """
             )
-            columns = st.columns(3)
+            # One row of three at a time, aligned along the bottom: a question that wraps onto two lines no
+            # longer pushes its whole column down, so every row of boxes stays level.
             for index, feature in enumerate(section_features):
+                if index % 3 == 0:
+                    columns = st.columns(3, vertical_alignment="bottom")
                 with columns[index % 3]:
                     values[feature] = render_feature_input(
                         stats, feature, f"{disease}_{feature}",

@@ -237,7 +237,11 @@ class PatientTriageTests(unittest.TestCase):
             self.assertIn("Add your doctor's AHEAD account email to share your saved screening results with them.",
                           [i.value for i in at.info])
         else:
-            self.assertEqual(titles, ["Emails", "Reminders in my calendar", "Data & privacy", "Care team access"])
+            # Phase 3a: Care team access always leads for patients (it was last and easy to miss); without the
+            # focus there is no "add your doctor" prompt.
+            self.assertEqual(titles, ["Care team access", "Emails", "Reminders in my calendar", "Data & privacy"])
+            self.assertNotIn("Add your doctor's AHEAD account email to share your saved screening results with them.",
+                             [i.value for i in at.info])
 
     def test_doctor_screening_uses_doctor_wording_and_no_share_line(self):
         at = self.screen(self.doctor, scored("diabetes", 0.01, HbA1c_level=7.1))

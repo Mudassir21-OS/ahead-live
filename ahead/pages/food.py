@@ -28,7 +28,8 @@ def analyze_photo(data,mime):
     raw=gemini_interaction([
         {"type":"text","text":prompt},
         {"type":"image","data":base64.b64encode(data).decode("ascii"),"mime_type":mime},
-    ], response_format={"type":"text","mime_type":"application/json"})
+    ], response_format={"type":"text","mime_type":"application/json"},
+       thinking_level="low",max_output_tokens=2048)   # a short JSON estimate: low thinking answers several seconds sooner
     parsed=json.loads(raw)
     if not isinstance(parsed,dict) or not isinstance(parsed.get('foods'),list):raise ValueError('No usable foods detected. Enter them manually.')
     return parsed

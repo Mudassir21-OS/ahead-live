@@ -25,11 +25,17 @@ EMAILS = {
     "plan_updates": ("Patient", "Plan changes",
                      "When your doctor changes your medication or prevention plan (at most one email an hour)."),
     "doctor_reviews": ("Doctor", "Results to review",
-                       "When a linked patient saves a result AHEAD marks for attention (at most one email an hour)."),
+                       "When a linked patient saves a screening result (at most one email an hour; results that "
+                       "arrive in between come together in one follow-up)."),
     "doctor_links": ("Doctor", "New linked patients", "When a patient links their AHEAD account to you."),
     "weekly_summary": ("Both", "Weekly summary", "Once a week, how many unread updates are waiting. Off unless you turn it on."),
 }
 DEFAULTS = {"plan_updates": True, "doctor_reviews": True, "doctor_links": True, "weekly_summary": False}
+# Which results a doctor hears about (in-app notice and email): every result (default, since most people screen
+# "not flagged" and early awareness is the point), or only those AHEAD marks for attention (urgent or at risk).
+REVIEW_SCOPES = {"all": "Every new result", "attention": "Only results that need attention"}
+REVIEW_SCOPE_DEFAULT = "all"
+ATTENTION = ("urgent", "at_risk")
 EVERY_HOUR = timedelta(hours=1)
 WEEK_GAP = timedelta(days=6)   # the weekly email is never sent twice in one week, whatever calls it
 
@@ -48,10 +54,30 @@ def email_prefs(user_id):
     return {key: bool(saved.get(key, default)) for key, default in DEFAULTS.items()}
 
 
+def _saved_email_group(user_id):
+    with connection() as db:
+        row = db.execute("SELECT preferences_json FROM users WHERE id=?", (user_id,)).fetchone()
+    return json.loads((row["preferences_json"] if row else None) or "{}").get("email", {})
+
+
 def set_email_pref(user_id, key, on):
     if key not in DEFAULTS:
         raise ValueError(key)
-    update_preferences(user_id, {"email": {**email_prefs(user_id), key: bool(on)}})
+    update_preferences(user_id, {"email": {**_saved_email_group(user_id), **email_prefs(user_id), key: bool(on)}})
+    if key == "doctor_reviews" and not on:
+        mailer.cancel_scheduled(user_id, ("doctor_review_more",))   # a waiting follow-up doesn't go either
+
+
+def review_scope(user_id):
+    """'all' or 'attention': which saved results this doctor hears about."""
+    scope = _saved_email_group(user_id).get("review_scope")
+    return scope if scope in REVIEW_SCOPES else REVIEW_SCOPE_DEFAULT
+
+
+def set_review_scope(user_id, scope):
+    if scope not in REVIEW_SCOPES:
+        raise ValueError(scope)
+    update_preferences(user_id, {"email": {**_saved_email_group(user_id), **email_prefs(user_id), "review_scope": scope}})
 
 
 def _person(db, user_id):
@@ -100,9 +126,33 @@ def doctor_linked(patient_id, doctor_id):
     return _email(doctor_id, "doctor_linked", "doctor_links")
 
 
+def _review_email(doctor_id, attention):
+    """At most one "result to review" email an hour per doctor, sent at once. Results that arrive within the hour
+    are not dropped: one follow-up ("more results") is scheduled for when the hour is up."""
+    if not mailer.enabled():
+        return None
+    try:
+        last = mailer.last_email(doctor_id, ("doctor_review", "doctor_review_more"), EVERY_HOUR)
+        if last is None:
+            return _email(doctor_id, "doctor_review", "doctor_reviews", detail="attention" if attention else "new")
+        if mailer.scheduled(doctor_id, "doctor_review_more"):
+            return None   # the follow-up already waiting covers this result too
+        with connection() as db:
+            person = _person(db, doctor_id)
+        if not person or not person["is_active"] or not email_prefs(doctor_id).get("doctor_reviews"):
+            return None
+        from ahead.accounts import site_url
+        return mailer.queue(person["email"], "doctor_review_more", doctor_id, person["name"], site=site_url(),
+                            send_at=last + EVERY_HOUR)
+    except Exception:   # an email must never break saving a screening
+        log.exception("could not queue the review email")
+        return None
+
+
 def new_result(patient_id, screening_id, disease, values, score, threshold):
-    """A patient saved a screening. When AHEAD marks it for attention (urgent or at risk), each linked doctor
-    gets an in-app notice (with the patient's name, inside AHEAD) and, if they want it, an email (without it)."""
+    """A patient saved a screening. Each linked doctor gets an in-app notice (with the patient's name, inside AHEAD)
+    and, if they want it, an email (without it). A doctor chooses in Settings whether that is every result (the
+    default) or only results AHEAD marks for attention (urgent or at risk); attention results are always labelled."""
     from ahead.config import DISEASES
     from ahead.platform_data import doctors_for, notify
     from ahead.triage import track_text, triage
@@ -111,17 +161,24 @@ def new_result(patient_id, screening_id, disease, values, score, threshold):
     except Exception:
         log.exception("could not sort a new result for the doctor notice")
         return []
-    if result["track"] not in ("urgent", "at_risk"):
-        return []
+    attention = result["track"] in ATTENTION
     with connection() as db:
         patient = _person(db, patient_id)
+    who = patient["name"] if patient else "A linked patient"
     label = track_text(result, "doctor")["label"]
     told = []
     for doctor in doctors_for(patient_id):
-        notify(doctor["id"], "review", "New result to review",
-               f"{patient['name'] if patient else 'A linked patient'} saved a {DISEASES[disease]['label']} screening: {label}.",
-               "intelligence", f"review-{screening_id}")
-        _email(doctor["id"], "doctor_review", "doctor_reviews", every=EVERY_HOUR)
+        if not attention and review_scope(doctor["id"]) == "attention":
+            continue
+        if attention:
+            notify(doctor["id"], "review", "New result to review",
+                   f"{who} saved a {DISEASES[disease]['label']} screening: {label}.",
+                   "intelligence", f"review-{screening_id}")
+        else:
+            notify(doctor["id"], "result", "New result",
+                   f"{who} saved a {DISEASES[disease]['label']} screening: {label} (lower risk, nothing urgent).",
+                   "intelligence", f"review-{screening_id}")
+        _review_email(doctor["id"], attention)
         told.append(doctor["id"])
     return told
 

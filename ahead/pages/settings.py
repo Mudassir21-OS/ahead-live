@@ -29,6 +29,22 @@ def open_care_team() -> None:
     go_to("settings")
 
 
+PREFERENCES_REQUEST = "settings_preferences_request"   # set by open_preferences(), read once by render_settings
+
+
+def open_preferences() -> None:
+    """Open Settings straight on the Preferences tab (emails, calendar, care team), e.g. from Notifications."""
+    st.session_state[PREFERENCES_REQUEST] = True
+    go_to("settings")
+
+
+def _preferences_requested() -> bool:
+    requested = st.session_state.pop(PREFERENCES_REQUEST, False)
+    if requested:   # a new tab-set key makes the browser open it fresh on Preferences
+        st.session_state.settings_tabs_count = st.session_state.get("settings_tabs_count", 0) + 1
+    return requested
+
+
 def _care_team_focus(user: dict) -> bool:
     """
     True while a patient who asked to share a result stays on Settings. A request also gives the tabs a new key, so
@@ -161,10 +177,10 @@ def _appearance_tab() -> None:
 
 
 def _care_team(user: dict, focus: bool = False) -> None:
-    _panel('Care team access','You decide which doctor accounts may view your saved history and assign medication. You can revoke access at any time.')
+    _panel('Care team access','You decide which doctor accounts may view your saved history and assign medication. Add as many doctors as you like, and remove access at any time.')
     if focus:
         st.info("Add your doctor's AHEAD account email to share your saved screening results with them.")
-    with st.form('grant_doctor'):
+    with st.form('grant_doctor',clear_on_submit=True):
         address=st.text_input('Doctor account email',key=CARE_TEAM_EMAIL)
         if st.form_submit_button('Add doctor'):
             if grant_doctor(user['id'],address):st.toast('Doctor linked.');st.rerun()  # st.success would vanish in the rerun
@@ -184,6 +200,17 @@ def _care_team(user: dict, focus: bool = False) -> None:
                 revoke_doctor(user['id'],doctor['id']);st.toast('Access removed.');st.rerun()
 
 
+def _review_scope(user: dict) -> None:
+    """Doctors: which saved results they hear about, by notice and (if on) email. Every result by default."""
+    scopes = list(alerts.REVIEW_SCOPES)
+    current = alerts.review_scope(user["id"])
+    st.radio("Tell me about", scopes, index=scopes.index(current), format_func=alerts.REVIEW_SCOPES.get,
+             key="review_scope", horizontal=True,
+             help="Every new result: lower-risk results too, so you can act early. Results that need attention "
+                  "(urgent or at risk) are always marked ⚠️ in Notifications.",
+             on_change=lambda: alerts.set_review_scope(user["id"], st.session_state["review_scope"]))
+
+
 def _emails_panel(user: dict) -> None:
     """Which optional emails this person gets (ahead/alerts.py). Account emails (confirm, reset, security notices)
     can't be switched off. In-app notifications are always on."""
@@ -201,14 +228,16 @@ def _emails_panel(user: dict) -> None:
             with right:
                 st.toggle(title, value=saved[name], key=f"email_pref_{name}", label_visibility="collapsed",
                           on_change=lambda n=name: alerts.set_email_pref(user["id"], n, st.session_state[f"email_pref_{n}"]))
+            if name == "doctor_reviews":
+                _review_scope(user)
     st.caption("Sign-up confirmation, password reset and security notices (password or email changed) are always sent.")
 
 
 def _preferences_tab(care_first: bool = False) -> None:
     user=st.session_state.get('user') or {}
     patient=user.get('role')=='Patient'
-    if patient and care_first:   # the patient came to share a result: Care team access leads the tab
-        _care_team(user, focus=True)
+    if patient:   # Care team access always leads the tab: it is how a patient shares results with a doctor
+        _care_team(user, focus=care_first)
     if user.get("role") in ("Patient", "Doctor"):
         _emails_panel(user)
     if patient:
@@ -228,8 +257,6 @@ def _preferences_tab(care_first: bool = False) -> None:
             st.toast("Screening history cleared.")
             st.rerun()
 
-    if patient and not care_first:
-        _care_team(user)
     if user := st.session_state.get("user"):
         if user["role"] == "Doctor" and st.button("Delete my saved clinical records", type="secondary"):
             delete_records(user["id"])
@@ -304,10 +331,12 @@ def render_settings() -> None:
     page_header('Your account','Settings','Manage your profile, appearance, data and sign-in.' if user['is_doctor']
                 else 'Personalize your experience, privacy and care team access.')
     focus = _care_team_focus(user)
+    to_preferences = _preferences_requested()
     count = st.session_state.get("settings_tabs_count")
     with st.container(key="settings_tabs"):
         profile, appearance, preferences, account = st.tabs(
-            TABS, default="Preferences" if focus else None, key=f"settings_tab_set_{count}" if count else None)
+            TABS, default="Preferences" if focus or to_preferences else None,
+            key=f"settings_tab_set_{count}" if count else None)
     with profile:
         _profile_tab(user)
     with appearance:

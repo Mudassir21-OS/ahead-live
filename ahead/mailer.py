@@ -38,6 +38,9 @@ ACCOUNT_RESERVE = 50       # the last 50 of the daily budget are kept for accoun
 PRIORITY_ACCOUNT = 0       # sign-up confirmation, password reset, set-up: sent first, may use the reserve
 PRIORITY_NOTICE = 1        # everything else
 STUCK_AFTER = timedelta(minutes=10)
+# The optional notices (ahead/alerts.py). One still waiting when its account is switched off is not sent;
+# account emails (including "your account was switched off") always are.
+OPTIONAL_KINDS = {"plan_updated", "doctor_review", "doctor_review_more", "doctor_linked", "weekly"}
 
 sent_messages = []         # the "memory" backend keeps sent emails here (tests)
 _wake = threading.Event()
@@ -160,8 +163,15 @@ def compose(kind, name="", link="", site="", detail=None):
         button, footer = ("Open AHEAD", site) if site else None, OPT_OUT
     elif kind == "doctor_review":
         subject, heading = "A linked patient has a new result to review", "New result to review"
-        body = [hello, "A patient who linked their AHEAD account to you saved a screening result that AHEAD marked "
-                       "for attention. Sign in to see it under Advanced Analytics & Patient Intelligence."]
+        saved = ("saved a screening result that AHEAD marked for attention" if detail == "attention"
+                 else "saved a new screening result")
+        body = [hello, f"A patient who linked their AHEAD account to you {saved}. "
+                       "Sign in to see it under Advanced Analytics & Patient Intelligence."]
+        button, footer = ("Open AHEAD", site) if site else None, OPT_OUT
+    elif kind == "doctor_review_more":
+        subject, heading = "More results to review in AHEAD", "More results to review"
+        body = [hello, "Linked patients saved more screening results since AHEAD last emailed you. "
+                       "Sign in to see them under Advanced Analytics & Patient Intelligence."]
         button, footer = ("Open AHEAD", site) if site else None, OPT_OUT
     elif kind == "doctor_linked":
         subject, heading = "A patient added you as their doctor", "A patient added you as their doctor"
@@ -183,8 +193,10 @@ def compose(kind, name="", link="", site="", detail=None):
 # THE OUTBOX
 # =============================================================================
 
-def queue(to_email, kind, user_id=None, name="", link="", site="", priority=None, detail=None):
-    """Save an email for sending. Returns its outbox id, or None when emails are off or the recipient's cap is reached."""
+def queue(to_email, kind, user_id=None, name="", link="", site="", priority=None, detail=None, send_at=None):
+    """Save an email for sending. Returns its outbox id, or None when emails are off or the recipient's cap is reached.
+
+    send_at: a later time (UTC datetime) to send it, for a catch-up email; default now."""
     to_email = (to_email or "").strip().lower()
     if not enabled() or "@" not in to_email:
         return None
@@ -202,7 +214,7 @@ def queue(to_email, kind, user_id=None, name="", link="", site="", priority=None
             return None
         cursor = db.execute("""INSERT INTO email_outbox(user_id,to_email,kind,subject,body_text,body_html,priority,next_attempt_at,created_at)
                                VALUES(?,?,?,?,?,?,?,?,?)""",
-                            (user_id, to_email, kind, subject, text, html, priority, _stamp(now), _stamp(now)))
+                            (user_id, to_email, kind, subject, text, html, priority, _stamp(max(send_at or now, now)), _stamp(now)))
         email_id = cursor.lastrowid
     if backend() == "memory":
         drain()                      # tests: send at once, no thread
@@ -217,6 +229,33 @@ def recently_queued(user_id, kind, within):
     with connection() as db:
         return db.execute("SELECT 1 FROM email_outbox WHERE user_id=? AND kind=? AND created_at>=? LIMIT 1",
                           (user_id, kind, _stamp(_now() - within))).fetchone() is not None
+
+
+def last_email(user_id, kinds, within):
+    """When the newest email of these kinds to this person went out (or was queued, if it hasn't gone yet), within
+    the given timedelta; None if there was none. Scheduled-but-unsent emails are left out (see scheduled)."""
+    marks = ",".join("?" * len(kinds))
+    since = _stamp(_now() - within)
+    with connection() as db:
+        row = db.execute(f"SELECT MAX(COALESCE(sent_at,created_at)) FROM email_outbox WHERE user_id=? AND kind IN ({marks}) "
+                         "AND status!='cancelled' AND NOT (status='pending' AND next_attempt_at>created_at AND attempts=0) "
+                         "AND COALESCE(sent_at,created_at)>=?", (user_id, *kinds, since)).fetchone()
+    return datetime.fromisoformat(row[0]) if row and row[0] else None
+
+
+def scheduled(user_id, kind):
+    """True when an email of this kind is waiting to go to this person later (a catch-up email)."""
+    with connection() as db:
+        return db.execute("SELECT 1 FROM email_outbox WHERE user_id=? AND kind=? AND status='pending' AND attempts=0 "
+                          "AND next_attempt_at>created_at LIMIT 1", (user_id, kind)).fetchone() is not None
+
+
+def cancel_scheduled(user_id, kinds):
+    """Drop emails of these kinds still waiting for this person (they switched the email off). Returns how many."""
+    marks = ",".join("?" * len(kinds))
+    with connection() as db:
+        return db.execute(f"UPDATE email_outbox SET status='cancelled',body_text='',body_html='' WHERE user_id=? "
+                          f"AND kind IN ({marks}) AND status='pending'", (user_id, *kinds)).rowcount
 
 
 def sent_today():
@@ -253,6 +292,12 @@ def _deliver(row):
         return False, f"network: {error}"[:300], True
 
 
+def _active(user_id):
+    with connection() as db:
+        row = db.execute("SELECT is_active FROM users WHERE id=?", (user_id,)).fetchone()
+    return bool(row and row["is_active"])
+
+
 def drain(limit=20):
     """Send the emails that are due, within today's budget. Returns how many were sent."""
     if not enabled() or not _drain_lock.acquire(blocking=False):
@@ -269,6 +314,11 @@ def drain(limit=20):
             allowed = budget if row["priority"] == PRIORITY_ACCOUNT else budget - ACCOUNT_RESERVE
             if allowed <= 0:
                 continue  # waits for tomorrow's budget
+            if row["kind"] in OPTIONAL_KINDS and row["user_id"] and not _active(row["user_id"]):
+                with connection() as db:  # a notice queued earlier (a catch-up) for an account switched off since
+                    db.execute("UPDATE email_outbox SET status='cancelled',body_text='',body_html='',last_error=? "
+                               "WHERE id=? AND status='pending'", ("account switched off", row["id"]))
+                continue
             with connection() as db:
                 if not db.execute("UPDATE email_outbox SET status='sending',next_attempt_at=? WHERE id=? AND status='pending'",
                                   (_stamp(), row["id"])).rowcount:
@@ -299,13 +349,13 @@ def recent(limit=100):
     """The outbox for the admin page: who, what kind and whether it went. Never the body."""
     with connection() as db:
         return [dict(r) for r in db.execute(
-            "SELECT id,to_email,kind,status,attempts,last_error,created_at,sent_at FROM email_outbox ORDER BY id DESC LIMIT ?",
+            "SELECT id,to_email,kind,status,attempts,last_error,created_at,sent_at,next_attempt_at FROM email_outbox ORDER BY id DESC LIMIT ?",
             (int(limit),)).fetchall()]
 
 
 def prune(days=30):
     with connection() as db:
-        db.execute("DELETE FROM email_outbox WHERE status IN ('sent','failed') AND created_at<?",
+        db.execute("DELETE FROM email_outbox WHERE status IN ('sent','failed','cancelled') AND created_at<?",
                    (_stamp(_now() - timedelta(days=days)),))
 
 
