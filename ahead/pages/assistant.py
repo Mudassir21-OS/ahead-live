@@ -50,7 +50,8 @@ SYSTEM_PROMPT = (
     "three conditions, common screening measurements (HbA1c, blood glucose, BMI, blood pressure, eGFR, ACR, "
     "creatinine, BUN, hemoglobin), and how to use the website (Overview, Screenings, Health & Lifestyle Tracker, "
     "Food Nutrition Analyzer, My plan, Notifications, Data & Analytics, Settings, and for doctors the "
-    "Clinical Dashboard and Patient Intelligence). Users may speak their questions; their words arrive already "
+    "Clinical Dashboard and Patient Intelligence). Medicine reminders: My plan → Add reminders to my calendar (a private "
+    "calendar link the phone or computer subscribes to); doctors add medication plans, patients can't. Users may speak their questions; their words arrive already "
     "transcribed, and your answer may be read aloud, so prefer plain sentences over tables. Always reply in English. "
     "Give general educational information only. Do not diagnose "
     "a person, do not claim a screening result confirms disease, and do not recommend starting, stopping or "
@@ -95,6 +96,16 @@ def _trait_icon(paths: str) -> str:
 
 # Offline answers for the suggested prompts so the page is useful without an API key.
 LOCAL_ANSWERS = {
+    "reminder": (
+        "Medicine reminders go in your own phone or computer calendar, so they ring at each dose time even when "
+        "AHEAD is closed:\n\n"
+        "1. Open **My plan** and choose **Add reminders to my calendar** (or **Settings → Preferences → Reminders "
+        "in my calendar**).\n"
+        "2. Choose **Make my private calendar link**, then **Subscribe on this device**. For Google Calendar, paste "
+        "the link under Other calendars → + → From URL.\n\n"
+        "The reminders follow your doctor's changes by themselves. Doses only appear once a doctor has added a "
+        "medication plan for you."
+    ),
     "what is ahead": (
         "**AHEAD** (Advanced Health Early Awareness and Disease Detection) is a Senior Design prototype that "
         "screens for **diabetes**, **cardiovascular disease** and **chronic kidney disease** using machine-learning "
@@ -220,19 +231,38 @@ def _navigation_target(text: str, is_doctor: bool) -> str | None:
     return None
 
 
+MEDS = r"(?:medications?|medicines?|meds|doses?|pills?|tablets?)"
+# "How do I set up reminders for medicines" is a how-to question, not a request for today's doses.
+HOW_TO = re.compile(r"\b(how|where|can i|could i|set ?up|setup|remind(?:er|ers)?|calendar|add|change|edit|stop|"
+                    r"should i|safe|side effects?|what is|what are the)\b")
+DOSE_QUESTION = re.compile(
+    rf"\b(?:my|today'?s?|tonight'?s?)\s+(?:\w+\s+)?{MEDS}\b"                       # my meds, today's doses
+    rf"|\b{MEDS}\b.*\b(?:today|tonight|now|this (?:morning|evening))\b"             # which pills ... today
+    rf"|\bdid i (?:take|miss)\b|\bwhat do i take\b|\bwhen do i take\b")
+
+
+def _asks_for_doses(lowered: str) -> bool:
+    """True for questions about the patient's own doses ("what are my meds today", "did I take my pills"), not for
+    questions that only mention medicines ("how do I set up reminders for medicines", "is metformin safe")."""
+    if not DOSE_QUESTION.search(lowered):
+        return False
+    return not HOW_TO.search(lowered) or bool(re.search(r"\bwhat are my\b|\bdid i\b", lowered))
+
+
 def _status_answer(text: str, user_id: int) -> str | None:
     """The patient's own lifestyle score or today's doses, read from their account."""
     from ahead.platform_data import lifestyle_history, local_today, scheduled_doses
     lowered = text.lower()
     if not re.search(r"\b(my|i|me)\b", lowered):
         return None
-    if re.search(r"\b(lifestyle|wellness)\b", lowered) or re.search(r"\bmy (latest |last )?score\b", lowered):
+    about_score = re.search(r"\b(lifestyle|wellness)\b", lowered) or re.search(r"\bmy (latest |last )?score\b", lowered)
+    if about_score and (not HOW_TO.search(lowered) or re.search(r"\bwhat(?:'s| is) my\b", lowered)):
         latest = lifestyle_history(user_id)
         if not latest:
             return "You haven't saved a lifestyle check-in yet. Open the **Health & Lifestyle Tracker** to record your first one."
         return (f"Your latest lifestyle score is **{latest[0]['scores']['overall']} out of 100**. "
                 "Open the Health & Lifestyle Tracker to see what makes it up.")
-    if re.search(r"\b(medication|medications|medicine|medicines|meds|doses?|pills?)\b", lowered):
+    if _asks_for_doses(lowered):
         doses = scheduled_doses(user_id, local_today(), local_today())
         if not doses:
             return "You have no medication doses scheduled today."

@@ -227,3 +227,25 @@ class AgeNoteTests(Base):
         pdf = patient_report("diabetes", "Diabetes screening", {"age": 70, "bmi": 28}, 0.6, 0.21, "RandomForest", {},
                              audience="patient")
         self.assertTrue(pdf.startswith(b"%PDF"))
+
+
+class AssistantRoutingTests(Base):
+    def test_only_questions_about_my_doses_get_the_dose_list(self):
+        from ahead.pages.assistant import _asks_for_doses
+        for question in ("what are my meds today", "did i take my pills", "which pills do i take tonight",
+                         "what are my medicines"):
+            self.assertTrue(_asks_for_doses(question), question)
+        for question in ("how do i set up reminders for medicines", "what medicine should i take for a headache",
+                         "is metformin safe with coffee", "how do i add my medicine"):
+            self.assertFalse(_asks_for_doses(question), question)
+
+    def test_reminder_how_to_gets_a_real_answer(self):
+        from ahead.pages.assistant import _local_answer, _status_answer
+        question = "how do i set up reminders for medicines"
+        self.assertIsNone(_status_answer(question, self.p["id"]))
+        self.assertIn("Add reminders to my calendar", _local_answer(question))
+
+    def test_how_to_improve_lifestyle_is_not_answered_with_the_score(self):
+        from ahead.pages.assistant import _status_answer
+        self.assertIsNone(_status_answer("how do i improve my lifestyle score", self.p["id"]))
+        self.assertIsNotNone(_status_answer("what is my lifestyle score", self.p["id"]))
