@@ -12,14 +12,22 @@ Routes added next to Streamlit:
 It also starts the background email sender (ahead/mailer.py) when BREVO_API_KEY is set, and loads the
 models in the background so the first screening after a restart doesn't wait (AHEAD_WARM_UP=0 turns it off).
 
+Phase 3b: start-up stops if the database holds encrypted health values that AHEAD_FIELD_KEY can't open
+(ahead/fieldcrypt.py), then a background job encrypts anything still unencrypted and applies the retention
+rules (ahead/retention.py). Every response carries a Content-Security-Policy (see SecurityHeaders).
+
 `streamlit run app.py` still works for quick local UI work, but sign-ins then don't survive a reload.
 """
 
+import base64
+import hashlib
 import hmac
 import json
 import logging
 import os
+import re
 import threading
+from pathlib import Path
 from urllib.parse import urlsplit
 
 import streamlit as st
@@ -28,7 +36,7 @@ from starlette.middleware import Middleware
 from starlette.responses import JSONResponse, Response
 from starlette.routing import Route
 
-from ahead import accounts, alerts, calendar_feed, db, mailer
+from ahead import accounts, alerts, calendar_feed, db, fieldcrypt, mailer, retention
 from ahead.storage import init_db
 
 log = logging.getLogger("ahead.server")
@@ -130,11 +138,62 @@ async def weekly_task(request):
     if not hmac.compare_digest(request.headers.get("x-ahead-task-key", ""), key):
         return JSONResponse({"error": "forbidden"}, status_code=403)
     result = await run_in_threadpool(alerts.weekly_summaries)
+    result["maintenance"] = await run_in_threadpool(_maintenance, True)
     return JSONResponse(result)
 
 
+def _index_script_hashes():
+    """CSP hashes of the inline <script> blocks in Streamlit's own index.html (read from the installed package,
+    so a Streamlit upgrade can't silently break the page)."""
+    try:
+        html = (Path(st.__file__).resolve().parent / "static" / "index.html").read_text(encoding="utf-8")
+    except OSError:
+        log.exception("could not read Streamlit's index.html for the Content-Security-Policy")
+        return []
+    return [f"'sha256-{base64.b64encode(hashlib.sha256(body.encode()).digest()).decode()}'"
+            for body in re.findall(r"<script>(.*?)</script>", html, re.S)]
+
+
+def content_security_policy(https=False, host=""):
+    """What the browser may load and run on AHEAD's pages.
+
+    * Scripts only from AHEAD itself: Streamlit's bundle, its one inline line (allowed by its hash) and AHEAD's
+      small components (ahead/session.py, ahead/browser.py), which Streamlit loads as blob: modules. No inline
+      scripts, no eval (WebAssembly compilation is allowed: Streamlit's table widget uses it), no other sites.
+    * Styles may be inline (Streamlit and its charts write <style> elements and style attributes at run time),
+      plus Google Fonts for the Inter typeface.
+    * Images, fonts and media from AHEAD or data:/blob: URLs (charts, uploads, the voice recorder).
+    * Network requests only to AHEAD, its websocket included: Gemini and Brevo are called by the server.
+    * Never inside another site's frame; forms post only to AHEAD; <base> can't redirect links; no plugins.
+    """
+    policy = ["default-src 'self'",
+              "script-src 'self' blob: 'wasm-unsafe-eval' " + " ".join(_SCRIPT_HASHES),
+              "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
+              "img-src 'self' data: blob:",
+              "font-src 'self' data: https://fonts.gstatic.com",
+              "media-src 'self' data: blob:",
+              # 'self' covers the websocket in current browsers; the explicit address helps older Safari.
+              "connect-src 'self'" + (f" {'wss' if https else 'ws'}://{host}" if _HOST.fullmatch(host or "") else ""),
+              "worker-src 'self' blob:",
+              "manifest-src 'self'",
+              "form-action 'self'",
+              "frame-ancestors 'none'",
+              "base-uri 'self'",
+              "object-src 'none'"]
+    if https:
+        policy.append("upgrade-insecure-requests")
+    return "; ".join(policy)
+
+
+_SCRIPT_HASHES = _index_script_hashes()
+_HOST = re.compile(r"[A-Za-z0-9.-]{1,253}(:[0-9]{1,5})?")
+
+
 class SecurityHeaders:
-    """Headers on every HTTP response. A full Content-Security-Policy is a later step (Streamlit needs testing)."""
+    """Headers on every HTTP response, including the Content-Security-Policy above.
+
+    AHEAD_CSP=report (Render → Environment) switches the policy to report-only, as a quick way out if a future
+    Streamlit version needs something it doesn't allow: the browser console then lists what would be blocked."""
 
     def __init__(self, app):
         self.app = app
@@ -145,13 +204,18 @@ class SecurityHeaders:
             return
         headers = {k.decode().lower(): v.decode() for k, v in scope.get("headers", [])}
         https = headers.get("x-forwarded-proto", scope.get("scheme", "http")).split(",")[0].strip() == "https"
+        report_only = os.environ.get("AHEAD_CSP", "").strip().lower() == "report"
+        csp_header = b"content-security-policy-report-only" if report_only else b"content-security-policy"
+        csp = content_security_policy(https, headers.get("host", "")).encode()
 
         async def send_with_headers(message):
             if message["type"] == "http.response.start":
                 extra = [(b"x-content-type-options", b"nosniff"), (b"x-frame-options", b"DENY"),
-                         (b"content-security-policy", b"frame-ancestors 'none'; base-uri 'self'; object-src 'none'"),
-                         (b"referrer-policy", b"same-origin"),
+                         (csp_header, csp), (b"referrer-policy", b"same-origin"),
+                         (b"cross-origin-opener-policy", b"same-origin"),
                          (b"permissions-policy", b"camera=(), geolocation=(), payment=(), usb=()")]
+                if report_only:   # the parts that matter most stay enforced
+                    extra.append((b"content-security-policy", b"frame-ancestors 'none'; base-uri 'self'; object-src 'none'"))
                 if https:
                     extra.append((b"strict-transport-security", b"max-age=31536000"))
                 message["headers"] = list(message.get("headers", [])) + extra
@@ -182,8 +246,33 @@ def _warm_up():
         noisy.setLevel(level)
 
 
+def _maintenance(weekly=False):
+    """Encrypt values saved before the key was set (or under an old key), then apply the retention rules.
+    Start-up runs it in the background; the weekly task runs it too. Returns counts (never any data)."""
+    done = {}
+    try:
+        done["encrypted"] = fieldcrypt.encrypt_existing()
+        if done["encrypted"]:
+            print(f"AHEAD: encrypted {done['encrypted']} stored health values", flush=True)
+    except Exception:
+        log.exception("encrypting stored values failed (tried again next time)")
+        done["encrypted"] = "error"
+    try:
+        done["retention"] = retention.run(force=weekly)
+    except Exception:
+        log.exception("retention clean-up failed (tried again next time)")
+        done["retention"] = "error"
+    return done
+
+
 def _startup():
     init_db()
+    try:
+        fieldcrypt.check()
+    except fieldcrypt.FieldKeyError as error:
+        # Better no site than pages that can't read their data: Render keeps the previous deploy running.
+        print(f"AHEAD can't start: {error}", flush=True)
+        raise
     try:
         accounts.prune()
     except Exception:
@@ -191,6 +280,16 @@ def _startup():
     mailer.start_background_sender()
     if os.environ.get("AHEAD_WARM_UP", "1") != "0":
         threading.Thread(target=_warm_up, name="ahead-warm-up", daemon=True).start()
+    if os.environ.get("AHEAD_STARTUP_MAINTENANCE", "1") != "0":
+        threading.Thread(target=_delayed_maintenance, name="ahead-maintenance", daemon=True).start()
+
+
+def _delayed_maintenance():
+    """After a deploy the previous version keeps serving open tabs for a minute or two, and it can't read encrypted
+    values: wait before encrypting older ones, so those tabs don't break."""
+    import time
+    time.sleep(float(os.environ.get("AHEAD_MAINTENANCE_DELAY", "180")))
+    _maintenance()
 
 
 _startup()

@@ -354,9 +354,10 @@ def recent(limit=100):
 
 
 def prune(days=30):
+    """Delete the records of finished emails older than `days` (ahead/retention.py). Returns how many."""
     with connection() as db:
-        db.execute("DELETE FROM email_outbox WHERE status IN ('sent','failed','cancelled') AND created_at<?",
-                   (_stamp(_now() - timedelta(days=days)),))
+        return max(db.execute("DELETE FROM email_outbox WHERE status IN ('sent','failed','cancelled') AND created_at<?",
+                              (_stamp(_now() - timedelta(days=days)),)).rowcount, 0)
 
 
 # =============================================================================

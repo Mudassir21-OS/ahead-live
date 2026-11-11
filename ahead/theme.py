@@ -409,6 +409,10 @@ h1, h2, h3, h4, h5, h6 { color: var(--ahead-title); }
 }
 .settings-row-title { color: var(--ahead-title); font-size: 0.82rem; font-weight: 680; }
 .settings-row-copy { color: var(--ahead-muted); font-size: 0.7rem; margin-top: 2px; }
+.consent-points .settings-row { align-items: flex-start; border-bottom: 1px solid var(--ahead-border); }
+.consent-points .settings-row:last-child { border-bottom: none; }
+.consent-points .settings-row-copy { font-size: 0.78rem; line-height: 1.5; }
+.st-key-consent_box { max-width: 860px; }
 .st-key-settings_rows [data-testid="stHorizontalBlock"], .st-key-settings_rows_privacy [data-testid="stHorizontalBlock"] { align-items: center !important; border-bottom: 1px solid var(--ahead-border); }
 .st-key-settings_rows [data-testid="stHorizontalBlock"]:last-child, .st-key-settings_rows_privacy [data-testid="stHorizontalBlock"]:last-child { border-bottom: none; }
 .appearance-preview { height: 96px; border-radius: 10px; border: 1px solid var(--ahead-border); margin-bottom: 10px; overflow: hidden; position: relative; }
@@ -586,7 +590,7 @@ def _token_block(t: dict) -> str:
 
 
 _TAB_BOX_CSS = """<style>
-.st-key-ahead_tab_box { position:absolute !important; width:1px !important; height:1px !important; overflow:hidden !important;
+.st-key-ahead_tab_box, [class*="st-key-ahead_hidden_"] { position:absolute !important; width:1px !important; height:1px !important; overflow:hidden !important;
   opacity:0 !important; pointer-events:none !important; margin:0 !important; padding:0 !important; border:0 !important; }
 </style>"""
 

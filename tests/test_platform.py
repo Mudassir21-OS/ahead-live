@@ -5,6 +5,8 @@ import tempfile
 import unittest
 from datetime import date,timedelta
 
+import pytest
+
 from ahead.storage import init_db,create_user,authenticate,save_screening,load_screenings
 from ahead.platform_data import (init_platform,grant_doctor,allowed,linked_patients,patient_screenings,
     save_lifestyle,lifestyle_history,set_goals,get_goals,set_challenge_day,challenge_days,
@@ -56,6 +58,9 @@ class PlatformTests(unittest.TestCase):
         save_food(self.p,['rice'],{'calories':300,'portion':'1 bowl'})
         self.assertEqual(food_history(self.p)[0]['foods'],['rice'])
 
+    @pytest.mark.plain_rows   # writes rows as they were before encryption (Phase 3b)
+
+    @pytest.mark.plain_rows   # writes rows as they were saved before encryption (Phase 3b)
     def test_meals_group_by_local_day(self):
         import json
         from ahead.storage import connection

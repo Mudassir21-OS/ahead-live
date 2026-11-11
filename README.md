@@ -95,6 +95,10 @@ SDP-Project-AHEAD/
 │   ├── theme.py            ← colour tokens (light & dark), global CSS, Plotly styling
 │   ├── components.py       ← shared UI pieces + session-state helpers
 │   ├── screening.py        ← the guided screening flow (form → prediction → guidance)
+│   ├── fieldcrypt.py       ← encryption of health values in the database (AHEAD_FIELD_KEY)
+│   ├── consent.py          ← patient consent text and records
+│   ├── retention.py        ← what is deleted when (notices, email records, switched-off accounts)
+│   ├── browser.py          ← small browser jobs as components (no inline scripts, for the CSP)
 │   └── pages/
 │       ├── public.py       ← login, about, contact, help
 │       ├── overview.py     ← dashboard
@@ -102,6 +106,7 @@ SDP-Project-AHEAD/
 │       ├── analytics.py    ← data & model explorer
 │       ├── clinical.py     ← doctor-only cohort screening
 │       ├── assistant.py    ← Ask AHEAD chat
+│       ├── consent_page.py ← the consent page and the Data & privacy panel
 │       └── settings.py     ← settings tabs
 ├── train_model.py          ← benchmarks six model families per disease, saves models + metadata
 ├── scripts/build_nhanes_training.py ← builds the NHANES diabetes and kidney training files
@@ -336,6 +341,25 @@ The live site runs on **Render** (web service, free plan, Frankfurt) with **Neon
 5. Migrations run on every start. Before a deploy that adds a migration, create a Neon backup branch.
 
 Health check: `GET /healthz` returns `{"status": "ok", "database": "ok"}`.
+
+**Security and privacy (Phase 3b)**
+
+* **Encrypted health values.** Set `AHEAD_FIELD_KEY` (32 random bytes in base64; make one with
+  `python -c "from ahead.fieldcrypt import make_key; print(make_key())"`). Screening and lifestyle answers, clinic
+  records, food logs, goals, medicine and prevention plans, their audit trails and notice texts are then stored
+  AES-256-GCM encrypted; values saved before the key was set are encrypted in the background after the next start.
+  **Losing the key loses the encrypted data**: keep it in a password manager. To change it, set `new,old`, wait until
+  Accounts & Security → Data protection says nothing uses the old key, then remove the old one. If the database holds
+  values for a key AHEAD doesn't have, start-up stops with an error (Render keeps the previous deploy running).
+  Risk scores, dates and account details stay readable (the doctor pages sort and filter on them).
+* **Consent.** Patients agree to "How AHEAD uses your information" when they sign up; anyone without a current
+  agreement sees it after signing in. Each agreement is recorded (`consents`), and patients can withdraw it in
+  Settings → Preferences → Data & privacy. Changing `VERSION` in `ahead/consent.py` asks everyone again.
+* **Retention** (`ahead/retention.py`): notifications are deleted after 90 days, email records after 30, and accounts
+  switched off for a year are erased. It runs at start-up (at most daily), weekly, and from the admin page.
+* **Content-Security-Policy** (`server.py`): scripts only from the site itself (no inline scripts, no eval), no
+  framing, network requests only to the site. `AHEAD_CSP=report` makes it report-only if a future Streamlit version
+  needs something it doesn't allow (the browser console then lists it).
 
 Speed on the free plan (0.1 CPU): at start-up the server loads the recommended models in the background
 (`AHEAD_WARM_UP=0` turns this off), so the first screening doesn't wait for them. The Analytics charts are

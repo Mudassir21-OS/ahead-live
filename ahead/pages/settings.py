@@ -13,6 +13,7 @@ from ahead.components import current_user, go_to, logout, markdown_literal, pref
 from ahead.theme import APPEARANCE_OPTIONS, appearance_mode
 from ahead import accounts, alerts, mailer
 from ahead.pages.calendar_panel import render_calendar_panel
+from ahead.pages.consent_page import render_privacy_panel
 from ahead.session import request_ip
 from ahead.storage import change_password, delete_records, delete_screenings, update_profile, update_preferences
 from ahead.platform_data import doctors_for, grant_doctor, revoke_doctor, ai_consent, plans, prevention_plans
@@ -244,7 +245,10 @@ def _preferences_tab(care_first: bool = False) -> None:
         _panel("Reminders in my calendar", "Medicine reminders in your phone or computer calendar, even when AHEAD is closed.")
         render_calendar_panel(user["id"], "settings_calendar", compact=True)
 
-    _panel("Data & privacy", "Screening history and doctor review records are saved in the configured local database.")
+    _panel("Data & privacy", "Your saved health values are stored encrypted. Notifications are deleted after 90 days, and "
+                             "an account that is switched off is erased after one year.")
+    if patient:
+        render_privacy_panel(user["id"])
     with st.container(key="settings_rows_privacy"):
         _toggle_row("◈", "Keep screening history", "Save future results and show them on the Overview page.", "keep_history")
     history = st.session_state.get("screening_history", [])

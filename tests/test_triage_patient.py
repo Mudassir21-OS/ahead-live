@@ -11,6 +11,7 @@ from pathlib import Path
 from unittest import mock
 from zoneinfo import ZoneInfo
 
+import pytest
 from streamlit.testing.v1 import AppTest
 
 import ahead.screening as screening
@@ -372,6 +373,9 @@ class PatientTriageTests(unittest.TestCase):
         self.save("diabetes", {"age": 50, "HbA1c_level": None, "blood_glucose_level": 140}, 0.12, days_ago=0)
         self.assertIsNone(self.home()[1])
 
+    @pytest.mark.plain_rows   # writes rows as they were before encryption (Phase 3b)
+
+    @pytest.mark.plain_rows   # writes a damaged unencrypted value on purpose
     def test_open_urgent_keeps_each_reason_until_its_values_are_re_entered(self):
         def row(disease, values, score=0.1):
             return save_screening(self.patient["id"], disease, best_model(disease), score, int(score >= 0.5), 0.5,

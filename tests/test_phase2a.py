@@ -142,8 +142,10 @@ class TabAppTests(Base):
         with connection() as conn:
             row = conn.execute("SELECT tab_hash FROM sessions WHERE id=?", (at.session_state["session_id"],)).fetchone()
         self.assertEqual(row["tab_hash"], accounts._hash(TAB["secret"]))
-        scripts = " ".join(str(h.proto) for h in at.get("html"))
-        self.assertIn(TAB["id"], scripts)   # the POST to /auth/session names this tab
+        # Phase 3b: the POST runs in the ahead_actions component (no inline scripts); its data names this tab.
+        scripts = " ".join(c.proto.json for c in at.get("bidi_component") if c.proto.component_name == "ahead_actions")
+        self.assertIn('"action": "session"', scripts)
+        self.assertIn(TAB["id"], scripts)
 
     def test_a_reloaded_tab_is_signed_back_in(self):
         session_id, code = accounts.start_session(self.p["id"], tab_secret=TAB["secret"])
@@ -182,8 +184,8 @@ class TabAppTests(Base):
         next(b for b in at.button if b.label == "Log Out").click().run()
         self.assertFalse(at.session_state["authenticated"])
         self.assertEqual(at.session_state[session.TAB_KEY]["id"], TAB["id"])
-        scripts = " ".join(str(h.proto) for h in at.get("html"))
-        self.assertIn("/auth/logout", scripts)
+        scripts = " ".join(c.proto.json for c in at.get("bidi_component") if c.proto.component_name == "ahead_actions")
+        self.assertIn('"action": "logout"', scripts)
         self.assertIn(TAB["id"], scripts)
 
 
@@ -297,6 +299,7 @@ class SignUpTests(Base):
         boxes["Your email"].set_value(email)
         next(t for t in at.text_input if t.label.startswith("Choose a password")).set_value(PW)
         boxes["Type the password again"].set_value(PW)
+        at.checkbox(key="signup_agree").check()   # Phase 3b: agreeing to the consent text is part of signing up
         next(b for b in at.button if b.label == "Create account").click().run()
         self.assertFalse(at.exception, [e.message for e in at.exception])
         return at

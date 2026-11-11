@@ -26,6 +26,7 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
+from ahead.browser import close_phone_menu  # noqa: E402
 from ahead.components import current_user, go_to, init_state, open_assistant  # noqa: E402
 from ahead.session import browser_scripts, mount_tab_identity, restore, sign_out  # noqa: E402
 from ahead.config import NAV_ITEMS  # noqa: E402
@@ -48,6 +49,7 @@ from ahead.pages.medications import render_medications  # noqa: E402
 from ahead.pages.notifications import render_notifications  # noqa: E402
 from ahead.pages.notifications import refresh_patient_notifications  # noqa: E402
 from ahead.pages.doctor_intelligence import render_doctor_intelligence  # noqa: E402
+from ahead.pages.consent_page import needs_consent, render_consent_gate  # noqa: E402
 
 init_db()
 startup_platform()
@@ -97,6 +99,11 @@ if "page" in st.query_params:
 apply_theme()
 inject_app_css()
 user = current_user()
+
+# A patient without a current agreement to how AHEAD uses their information sees only the consent page.
+if needs_consent(st.session_state.user["id"], not (user["is_doctor"] or user["is_admin"])):
+    render_consent_gate(st.session_state.user["id"])
+    st.stop()
 
 # =============================================================================
 # SIDEBAR
@@ -156,13 +163,10 @@ with st.sidebar:
 
     st.html(sidebar_dynamic_css(active))
 
-    if closes := st.session_state.pop("close_menu", 0):
+    if st.session_state.pop("close_menu", 0):
         # After choosing a page on a phone-sized screen, fold the menu away as if the person tapped outside it
-        # (Streamlit leaves it open over the page). The count makes each script new, so it runs every time.
-        st.html("<script>/* close menu %d */ if (window.matchMedia('(max-width: 768px)').matches) {"
-                "const b = document.querySelector('[data-testid=stSidebarCollapseButton] button');"
-                "if (b && b.getAttribute('aria-expanded') === 'true') b.click(); }</script>" % closes,
-                unsafe_allow_javascript=True)
+        # (Streamlit leaves it open over the page). Each request has its own id, so it runs every time.
+        close_phone_menu()
 
     with st.container(key="sidebar_bottom"):
         st.html(

@@ -105,7 +105,7 @@ def main():
             sys.exit("Nothing changed.")
         password = ask_password()
         with connection() as conn:
-            conn.execute("UPDATE users SET password_hash=?,token_version=token_version+1,is_active=1 WHERE id=?",
+            conn.execute("UPDATE users SET password_hash=?,token_version=token_version+1,is_active=1,deactivated_at=NULL WHERE id=?",
                          (password_hash(password), existing["id"]))
         print("Password updated.")
         return

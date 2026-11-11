@@ -207,3 +207,14 @@
     margin-top: 10px; padding: 10px 12px; border-radius: 12px; font-size: 0.78rem; line-height: 1.5;
     color: #31506B; background: #EEF6FA; border: 1px solid #D6E6EE;
 }
+
+/* the consent text in the sign-up form (Phase 3b): folded, readable, scrolls if long */
+.signup-consent {
+    margin: 4px 0 2px; padding: 10px 12px; border-radius: 12px; font-size: 0.78rem; line-height: 1.5;
+    color: #31506B; background: #EEF6FA; border: 1px solid #D6E6EE;
+}
+.signup-consent summary { cursor: pointer; font-weight: 650; color: #0E7490; }
+.signup-consent ul { margin: 8px 0 0; padding-left: 18px; max-height: 240px; overflow-y: auto; }
+.signup-consent li { margin-bottom: 6px; }
+.signup-consent li, .signup-consent li strong, .signup-consent summary { font-size: 0.78rem !important; line-height: 1.5 !important; }
+.st-key-signup_consent [data-testid="stCheckbox"] label p { color: #173A5E !important; font-size: 0.84rem !important; }

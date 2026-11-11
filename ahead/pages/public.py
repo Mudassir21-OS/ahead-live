@@ -10,7 +10,7 @@ import os
 
 import streamlit as st
 
-from ahead import accounts, mailer
+from ahead import accounts, consent, mailer
 from ahead.components import username_hint
 from ahead.config import BASE, ROLE_ADMIN, ROLE_DOCTOR, ROLE_PATIENT
 from ahead.resources import icon_uri, image_data_uri, static_url
@@ -99,7 +99,7 @@ def _reserved(email: str) -> bool:
     return any(email == os.environ.get(name, "").strip().lower() for name in ("AHEAD_DOCTOR_EMAIL", "AHEAD_ADMIN_EMAIL"))
 
 
-def _register(name: str, email: str, password: str, confirm: str) -> tuple[bool, str]:
+def _register(name: str, email: str, password: str, confirm: str, agreed: bool = False) -> tuple[bool, str]:
     email = (email or "").strip().lower()
     local, _, domain = email.partition("@")
     if not (name or "").strip() or not local or "." not in domain or len(email) > 254:
@@ -108,6 +108,8 @@ def _register(name: str, email: str, password: str, confirm: str) -> tuple[bool,
         return False, f"Choose a password of at least {MIN_PASSWORD} characters."
     if password != confirm:
         return False, "The two passwords don't match."
+    if not agreed:
+        return False, "Please read how AHEAD uses your information and tick the box to agree."
     ip = request_ip()
     if not accounts.sign_up_allowed(ip):
         return False, "Too many new accounts from this network. Try again in an hour."
@@ -117,15 +119,23 @@ def _register(name: str, email: str, password: str, confirm: str) -> tuple[bool,
     confirm_by_email = mailer.enabled()
     if not create_user(email, password, ROLE_PATIENT, name.strip()[:120], verified=not confirm_by_email):
         return False, "That email is already registered."
-    accounts.audit("patient_registered", ip=ip)
+    from ahead.storage import connection
+    with connection() as db:
+        user_id = db.execute("SELECT id FROM users WHERE email=?", (email,)).fetchone()[0]
+    accounts.audit("patient_registered", target_user_id=user_id, ip=ip)
+    consent.give(user_id, ip)
     if confirm_by_email:
-        from ahead.storage import connection
-        with connection() as db:
-            user_id = db.execute("SELECT id FROM users WHERE email=?", (email,)).fetchone()[0]
         accounts.send_verification(user_id, ip)
         return True, (f"Account created. We've emailed a confirmation link to {email}. Open it, then sign in. "
                       "It can take a minute, and it may land in Junk or Spam.")
     return True, "Account created. Sign in above."
+
+
+def _consent_summary() -> str:
+    """The consent text in the sign-up form (ahead/consent.py), in a fold-out so the form stays short."""
+    items = "".join(f"<li><strong>{escape(title)}.</strong> {escape(copy)}</li>" for title, copy in consent.POINTS)
+    return (f'<details class="signup-consent"><summary>{escape(consent.TITLE)} (please read)</summary>'
+            f'<ul>{items}</ul></details>')
 
 
 def render_login() -> None:
@@ -232,8 +242,12 @@ def render_login() -> None:
                         new_password = st.text_input(f"Choose a password ({MIN_PASSWORD}+ characters)", type="password",
                                                      autocomplete="new-password")
                         confirm = st.text_input("Type the password again", type="password", autocomplete="new-password")
+                        with st.container(key="signup_consent"):
+                            st.html(_consent_summary())
+                            agreed = st.checkbox("I have read how AHEAD uses my information and agree.",
+                                                 key="signup_agree")
                         if st.form_submit_button("Create account"):
-                            ok, message = _register(name, new_email, new_password, confirm)
+                            ok, message = _register(name, new_email, new_password, confirm, agreed)
                             (st.success if ok else st.error)(message)
 
     _footer()

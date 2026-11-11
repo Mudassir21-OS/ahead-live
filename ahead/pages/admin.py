@@ -7,7 +7,7 @@ Admins manage who can sign in. They never see screenings, records, plans or any 
 import pandas as pd
 import streamlit as st
 
-from ahead import accounts, mailer
+from ahead import accounts, consent, fieldcrypt, mailer, retention
 from ahead.components import page_header
 from ahead.config import ROLE_ADMIN, ROLE_DOCTOR, ROLE_PATIENT
 from ahead.platform_data import to_local
@@ -23,6 +23,7 @@ ACTION_LABELS = {
     "password_set_from_link": "Password set from a link", "password_changed": "Password changed",
     "signed_out_everywhere": "Signed out everywhere", "email_verified": "Email confirmed",
     "reset_requested": "Password reset requested", "email_changed": "Email address changed",
+    "consent_given": "Consent given", "consent_withdrawn": "Consent withdrawn", "account_erased": "Account erased (retention)",
 }
 EMAIL_LABELS = {"verify": "Confirm email", "reset": "Password reset", "setup": "Account set-up",
                 "password_changed": "Password changed notice", "email_changed": "Email changed notice",
@@ -62,9 +63,10 @@ def render_admin():
 
     # A keyed tab set keeps the chosen tab after a button press (so a new set-up link stays on screen),
     # and only the open tab's content runs.
-    tabs = st.tabs(["Accounts", "Add a doctor or admin", "Audit log", "Emails", "My password"], key="admin_tabs",
-                   on_change="rerun")
-    for tab, draw in zip(tabs, (lambda: _accounts(me), lambda: _add(me), _audit, _emails, lambda: _my_password(me))):
+    tabs = st.tabs(["Accounts", "Add a doctor or admin", "Audit log", "Emails", "Data protection", "My password"],
+                   key="admin_tabs", on_change="rerun")
+    for tab, draw in zip(tabs, (lambda: _accounts(me), lambda: _add(me), _audit, _emails, _data_protection,
+                                lambda: _my_password(me))):
         if tab.open:
             with tab:
                 draw()
@@ -80,13 +82,15 @@ def _accounts(me):
     if not rows:
         st.info("No accounts match.")
         return
+    consents = consent.status_by_user()
     st.dataframe(pd.DataFrame([{
-        "Name": r["name"], "Email": r["email"], "Role": r["role"],
-        "Status": "Active" if r["is_active"] else "Deactivated",
-        "Created": _when(r["created_at"]), "Last sign-in": _when(r["last_login_at"]),
+        "Name": r["name"], "Email": r["email"], "Role": r["role"], "Status": _status(r),
+        "Consent": _consent_text(r, consents), "Created": _when(r["created_at"]), "Last sign-in": _when(r["last_login_at"]),
     } for r in rows]), hide_index=True, width="stretch")
+    st.caption("Accounts switched off for a year are erased automatically (Data protection tab). Reactivating one "
+               "before then cancels that.")
 
-    others = [r for r in rows if r["id"] != me["id"]]
+    others = [r for r in rows if r["id"] != me["id"] and not r.get("erased_at")]
     if not others:
         st.caption("You can't change your own account here; use My password.")
         return
@@ -121,6 +125,56 @@ def _accounts(me):
         st.success(message)
     if link := st.session_state.pop("admin_link", None):
         _show_link(*link)
+
+
+def _status(row):
+    if row.get("erased_at"):
+        return "Erased"
+    if row["is_active"]:
+        return "Active"
+    when = retention.erase_on(row.get("deactivated_at"))
+    return f"Deactivated · erased {to_local(when.isoformat()):%d %b %Y}" if when else "Deactivated"
+
+
+def _consent_text(row, consents):
+    """Patients only: whether they agreed to how AHEAD uses their information (not health data)."""
+    if row["role"] != ROLE_PATIENT or row.get("erased_at"):
+        return "—"
+    state, when = consents.get(row["id"], (None, None))
+    if state is None:
+        return "Not yet (asked at next sign-in)"
+    return {"given": "Given", "withdrawn": "Withdrawn", "old version": "Older text (asked again)"}[state] + f" · {_when(when)[:11]}"
+
+
+def _data_protection():
+    st.markdown("**Encryption of health values**")
+    if not fieldcrypt.enabled():
+        st.warning("Health values are not encrypted: AHEAD_FIELD_KEY is not set in Render → Environment. "
+                   "Add it (and save a copy in a password manager), then Save and deploy.")
+    else:
+        waiting = fieldcrypt.pending()
+        keys = fieldcrypt.keys()
+        if waiting:
+            st.info(f"Encryption is on (key {fieldcrypt.current_key_id()}). {sum(waiting.values())} older values are "
+                    "still being encrypted in the background; refresh in a minute.")
+        else:
+            st.success(f"Encryption is on (key {fieldcrypt.current_key_id()}). Every saved health value is encrypted.")
+        if len(keys) > 1 and not waiting:
+            st.info("Nothing uses the older key in AHEAD_FIELD_KEY any more: you can remove it (everything after the comma).")
+        st.caption("Admins never see the values themselves. Losing the key loses the encrypted data, so keep it in a "
+                   "password manager.")
+    st.markdown("**Retention**")
+    st.markdown(f"- Notifications: deleted after **{retention.NOTICE_DAYS} days**\n"
+                f"- Email records: deleted after **{retention.EMAIL_DAYS} days** (the email text is deleted once sent)\n"
+                f"- Accounts switched off: erased after **{retention.ACCOUNT_DAYS // 365} year**, unless reactivated")
+    last = retention.last_run()
+    if last:
+        st.caption(f"Last clean-up {_when(last['at'])}: {last['notices']} notifications, {last['emails']} email records "
+                   f"and {last['accounts']} accounts removed. It runs at start-up (at most daily) and weekly.")
+    if st.button("Run the clean-up now", key="admin_retention_run"):
+        done = retention.run(force=True)
+        st.success(f"Done: {done['notices']} notifications, {done['emails']} email records and {done['accounts']} "
+                   "accounts removed.")
 
 
 def _add(me):

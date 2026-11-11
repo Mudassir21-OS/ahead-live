@@ -218,7 +218,8 @@ class LinkAndAdminTests(Base):
 
     def test_admin_listing_holds_no_health_data(self):
         row = accounts.list_accounts()[0]
-        self.assertEqual(set(row), {"id", "email", "role", "name", "institution", "is_active", "created_at", "last_login_at"})
+        self.assertEqual(set(row), {"id", "email", "role", "name", "institution", "is_active", "created_at", "last_login_at",
+                                    "deactivated_at", "erased_at"})
 
 
 class TranslationTests(unittest.TestCase):
@@ -279,7 +280,8 @@ class AppPageTests(Base):
         self.assertFalse(at.exception, [e.message for e in at.exception])
         self.assertEqual(self.labels(at), ["Accounts & Security"])
         self.assertEqual(at.session_state.nav, "admin")
-        self.assertEqual([t.label for t in at.tabs], ["Accounts", "Add a doctor or admin", "Audit log", "Emails", "My password"])
+        self.assertEqual([t.label for t in at.tabs], ["Accounts", "Add a doctor or admin", "Audit log", "Emails", "Data protection",
+                                                          "My password"])
 
     def test_patients_and_doctors_cant_open_the_admin_page(self):
         for user in (self.p, self.d):

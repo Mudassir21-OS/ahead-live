@@ -25,6 +25,8 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
+from ahead import fieldcrypt
+
 log = logging.getLogger(__name__)
 
 BASE = Path(__file__).resolve().parent.parent
@@ -89,8 +91,23 @@ class Row(dict):
 
 
 def _row_factory(cursor):
+    """Rows with encrypted health values already decrypted (ahead/fieldcrypt.py)."""
+    names = [column.name for column in cursor.description] if cursor.description else []
+    return lambda values: Row(names, fieldcrypt.reveal(values))
+
+
+def _raw_row_factory(cursor):
+    """Rows exactly as stored (the encryption job needs the ciphertext)."""
     names = [column.name for column in cursor.description] if cursor.description else []
     return lambda values: Row(names, values)
+
+
+def _sqlite_row(cursor, values):
+    return Row([column[0] for column in cursor.description], fieldcrypt.reveal(values))
+
+
+def _sqlite_raw_row(cursor, values):
+    return Row([column[0] for column in cursor.description], values)
 
 
 # Tables with an auto-numbered id column: an INSERT into one of them returns the new id.
@@ -156,13 +173,14 @@ class _PgCursor:
 class _PgConnection:
     """Wraps a psycopg connection with the small sqlite3-like API the app uses."""
 
-    def __init__(self, conn):
+    def __init__(self, conn, decrypt=True):
         self._conn = conn
+        self._factory = _row_factory if decrypt else _raw_row_factory
 
     def execute(self, sql, params=()):
         params = tuple(params) if params is not None else ()
         query, table = translate(sql, bool(params))
-        cursor = self._conn.cursor()
+        cursor = self._conn.cursor(row_factory=self._factory)
         returning = (table in _ID_TABLES and "RETURNING" not in query.upper()
                      and " SELECT " not in f" {query.upper()} ".replace("\n", " "))
         if returning:
@@ -178,7 +196,7 @@ class _PgConnection:
         if not seq:
             return _PgCursor(self._conn.cursor())
         query, _ = translate(sql, True)
-        cursor = self._conn.cursor()
+        cursor = self._conn.cursor(row_factory=self._factory)
         cursor.executemany(query, seq)
         return _PgCursor(cursor)
 
@@ -238,11 +256,13 @@ def _pool():
 
 
 @contextmanager
-def connection():
-    """One transaction: committed when the block ends, rolled back if it raises."""
+def connection(decrypt=True):
+    """One transaction: committed when the block ends, rolled back if it raises.
+
+    Encrypted health values come back decrypted; decrypt=False returns them as stored."""
     if is_postgres():
         with _pool().connection() as conn:
-            wrapped = _PgConnection(conn)
+            wrapped = _PgConnection(conn, decrypt)
             try:
                 yield wrapped
                 conn.commit()
@@ -253,7 +273,7 @@ def connection():
     path = sqlite_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     db = sqlite3.connect(path, timeout=15)
-    db.row_factory = sqlite3.Row
+    db.row_factory = _sqlite_row if decrypt else _sqlite_raw_row
     try:
         db.execute("PRAGMA foreign_keys=ON")
         yield db

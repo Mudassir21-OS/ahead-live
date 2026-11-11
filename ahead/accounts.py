@@ -188,11 +188,12 @@ def record_sign_up(ip):
 
 
 def prune(days=30):
-    """Drop old rate-limit rows, dead sessions and old outbox rows (called at start-up)."""
+    """Drop old rate-limit rows, dead sessions, old one-time links and old outbox rows (called at start-up)."""
     cutoff = _stamp(_now() - timedelta(days=days))
     with connection() as db:
         db.execute("DELETE FROM rate_events WHERE created_at<?", (_stamp(_now() - timedelta(days=2)),))
         db.execute("DELETE FROM sessions WHERE expires_at<? OR (revoked_at IS NOT NULL AND revoked_at<?)", (cutoff, cutoff))
+        db.execute("DELETE FROM account_tokens WHERE expires_at<?", (cutoff,))
     from ahead import mailer
     mailer.prune(days)
 
@@ -502,7 +503,7 @@ def site_url():
 
 def list_accounts(role=None):
     """Account details only: no screenings, records or plans."""
-    query = ("SELECT id,email,role,name,institution,is_active,created_at,last_login_at FROM users"
+    query = ("SELECT id,email,role,name,institution,is_active,created_at,last_login_at,deactivated_at,erased_at FROM users"
              + (" WHERE role=?" if role else "") + " ORDER BY role, name, id")
     with connection() as db:
         return [dict(r) for r in db.execute(query, (role,) if role else ()).fetchall()]
@@ -541,13 +542,17 @@ def set_active(admin_id, user_id, active, ip=""):
     with connection() as db:
         if is_postgres_lock_needed():
             db.execute("SELECT pg_advisory_xact_lock(4207002)")  # two admins at once: only one wins the last-admin check
-        row = db.execute("SELECT role,is_active FROM users WHERE id=?", (user_id,)).fetchone()
+        row = db.execute("SELECT role,is_active,erased_at FROM users WHERE id=?", (user_id,)).fetchone()
         if not row:
             raise ValueError("Account not found.")
         if not active and row["role"] == ROLE_ADMIN and row["is_active"] and _active_admins(db) <= 1:
             raise ValueError("This is the last active admin, so it can't be deactivated.")
-        db.execute("UPDATE users SET is_active=?,token_version=token_version+? WHERE id=?",
-                   (1 if active else 0, 0 if active else 1, user_id))
+        if active and row["erased_at"]:
+            raise ValueError("This account was erased (switched off for over a year), so it can't be switched on again.")
+        # deactivated_at starts the year after which an account that stays off is erased (ahead/retention.py).
+        if bool(row["is_active"]) != bool(active):
+            db.execute("UPDATE users SET is_active=?,token_version=token_version+?,deactivated_at=? WHERE id=?",
+                       (1 if active else 0, 0 if active else 1, None if active else _stamp(), user_id))
         if not active:
             db.execute("UPDATE sessions SET revoked_at=? WHERE user_id=? AND revoked_at IS NULL", (_stamp(), user_id))
             db.execute("UPDATE account_tokens SET used_at=? WHERE user_id=? AND used_at IS NULL", (_stamp(), user_id))

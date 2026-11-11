@@ -22,6 +22,7 @@ def pages(user,names):
             print('FAIL',page,[x.message for x in at.exception]);raise RuntimeError(page)
         print('PASS',user['role'],page,flush=True)
     return at
+from ahead import consent;consent.give(p['id'])   # Phase 3b: patients agree before using AHEAD
 pages(p,['overview','wellness','food','medications','notifications','settings','screenings','analytics','assistant'])
 pages(d,['overview','intelligence','clinical'])
 for i in range(2):save_lifestyle(p['id'],v,evaluate(v))

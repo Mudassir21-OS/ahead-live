@@ -8,12 +8,11 @@ none, so a new identity is made and no earlier sign-in matches it. (Duplicating 
 sessionStorage, so a duplicated tab stays signed in like a reload; that is the browser's choice.)
 """
 
-import json
 from datetime import datetime
 
 import streamlit as st
 
-from ahead import accounts
+from ahead import accounts, browser
 from ahead.config import DISEASES, ROLE_ADMIN
 from ahead.storage import load_screenings
 
@@ -189,18 +188,11 @@ def sign_out():
     st.rerun()
 
 
-def _script(body):
-    st.html(f"<script>{body}</script>", unsafe_allow_javascript=True)
-
-
 def browser_scripts():
-    """Cookie work the server can't do over the websocket: done by a same-site POST from the page."""
+    """Cookie work the server can't do over the websocket: a same-site POST from the page (ahead/browser.py)."""
     pending = st.session_state.pop("pending_handoff", None)
     if pending:
         code, tab_id = pending
-        _script("fetch('/auth/session',{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json'},"
-                f"body:JSON.stringify({{code:{json.dumps(code)},tab:{json.dumps(tab_id)}}})}});")
+        browser.post_session(code, tab_id)
     if st.session_state.pop("clear_cookie", False):
-        tab_id = st.session_state.pop("cookie_tab", "")
-        _script("fetch('/auth/logout',{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json'},"
-                f"body:JSON.stringify({{tab:{json.dumps(tab_id)}}})}});")
+        browser.post_logout(st.session_state.pop("cookie_tab", ""))

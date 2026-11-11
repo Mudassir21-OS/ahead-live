@@ -5,13 +5,13 @@ ahead/pages/assistant.py
 chips, suggested prompts and a chat transcript backed by Gemini.
 """
 
-import json
 import re
 from html import escape
 from urllib.parse import quote
 
 import streamlit as st
 
+from ahead.browser import read_aloud
 from ahead.components import current_user, go_to, pref
 from ahead.config import ICONS_DIR, NAV_ITEMS
 from ahead.platform_data import local_now
@@ -250,35 +250,9 @@ def _speakable(markdown: str) -> str:
 
 
 def _read_aloud(text: str) -> None:
-    """Speak through the page's own speechSynthesis (free, on-device) with a Stop control.
-
-    The iframe shares the app's origin, so it can drive window.parent.speechSynthesis, which already
-    has the user's click/recording as its activation.
-    """
-    payload = json.dumps(_speakable(text)).replace("</", "<\\/")
+    """Speak through the browser's own speechSynthesis (free, on-device) with a Stop control (ahead/browser.py)."""
     t = tokens()
-    st.iframe(f"""<!doctype html><html><body style="margin:0;font:13px Inter,system-ui,sans-serif;background:transparent">
-<div id="bar" style="display:flex;align-items:center;gap:10px;padding:6px 12px;border-radius:12px;
-  background:{t['accent_soft']};color:{t['accent']};width:max-content">
-  <span id="msg">🔊 Reading the answer aloud…</span>
-  <button id="stop" style="border:0;border-radius:8px;padding:4px 10px;background:{t['accent']};color:white;cursor:pointer">Stop</button>
-</div>
-<script>
-const text = {payload};
-const host = window.parent && window.parent.speechSynthesis ? window.parent : window;
-const synth = host.speechSynthesis;
-const msg = document.getElementById('msg'), stop = document.getElementById('stop');
-if (!synth || !host.SpeechSynthesisUtterance) {{
-  msg.textContent = 'Reading aloud is not supported in this browser.'; stop.remove();
-}} else {{
-  synth.cancel();
-  const u = new host.SpeechSynthesisUtterance(text);
-  u.lang = 'en-US';
-  u.onend = () => {{ msg.textContent = '🔊 Finished reading.'; stop.remove(); }};
-  stop.onclick = () => {{ synth.cancel(); msg.textContent = 'Stopped.'; stop.remove(); }};
-  synth.speak(u);
-}}
-</script></body></html>""", height=46)
+    read_aloud(_speakable(text), t["accent_soft"], t["accent"])
 
 
 def _reply(history: list, is_doctor: bool = False) -> str:

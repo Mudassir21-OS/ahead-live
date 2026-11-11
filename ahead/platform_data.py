@@ -6,6 +6,7 @@ from zoneinfo import ZoneInfo
 
 from ahead import alerts, prevention
 from ahead.config import DISEASES
+from ahead.fieldcrypt import seal
 from ahead import db as database
 from ahead.storage import connection, init_db
 
@@ -61,7 +62,7 @@ def _stop_unlinked_plans(db, patient_id=None):
     for r in rows:
         stamp=now()
         if db.execute("UPDATE medication_plans SET status='stopped',updated_at=? WHERE id=? AND status IN ('active','paused')",(stamp,r['id'])).rowcount:
-            db.execute("INSERT INTO medication_audit(plan_id,doctor_id,action,details_json,created_at) VALUES(?,?,?,?,?)",(r['id'],r['doctor_id'],'stopped',json.dumps({'reason':'prescriber access removed'}),stamp))
+            db.execute("INSERT INTO medication_audit(plan_id,doctor_id,action,details_json,created_at) VALUES(?,?,?,?,?)",(r['id'],r['doctor_id'],'stopped',seal(json.dumps({'reason':'prescriber access removed'})),stamp))
             stopped.append(r)
     return stopped
 
@@ -137,7 +138,7 @@ def linked_patients(doctor_id):
 
 def save_lifestyle(patient_id, values, scores):
     with connection() as db:
-        db.execute("INSERT INTO lifestyle(patient_id,values_json,scores_json,created_at) VALUES(?,?,?,?)",(patient_id,json.dumps(values),json.dumps(scores),now()))
+        db.execute("INSERT INTO lifestyle(patient_id,values_json,scores_json,created_at) VALUES(?,?,?,?)",(patient_id,seal(json.dumps(values)),seal(json.dumps(scores)),now()))
     event(patient_id,'lifestyle_completed')
 
 
@@ -148,7 +149,7 @@ def lifestyle_history(patient_id):
 
 def set_goals(patient_id, goals):
     with connection() as db:
-        db.execute("INSERT INTO lifestyle_goals VALUES(?,?,?) ON CONFLICT(patient_id) DO UPDATE SET goals_json=excluded.goals_json,updated_at=excluded.updated_at",(patient_id,json.dumps(goals),now()))
+        db.execute("INSERT INTO lifestyle_goals VALUES(?,?,?) ON CONFLICT(patient_id) DO UPDATE SET goals_json=excluded.goals_json,updated_at=excluded.updated_at",(patient_id,seal(json.dumps(goals)),now()))
 
 
 def get_goals(patient_id):
@@ -172,7 +173,7 @@ def challenge_days(patient_id):
 
 def save_food(patient_id, foods, nutrients, source='manual'):
     with connection() as db:
-        db.execute("INSERT INTO food_entries(patient_id,foods_json,nutrients_json,source,created_at) VALUES(?,?,?,?,?)",(patient_id,json.dumps(foods),json.dumps(nutrients),source,now()))
+        db.execute("INSERT INTO food_entries(patient_id,foods_json,nutrients_json,source,created_at) VALUES(?,?,?,?,?)",(patient_id,seal(json.dumps(foods)),seal(json.dumps(nutrients)),source,now()))
     event(patient_id,'food_saved')
 
 
@@ -192,7 +193,7 @@ def food_history(patient_id):
 
 def notify(patient_id, kind, title, description, action='', dedupe_key=None):
     with connection() as db:
-        db.execute("INSERT OR IGNORE INTO notifications(patient_id,type,title,description,action,dedupe_key,created_at) VALUES(?,?,?,?,?,?,?)",(patient_id,kind,title,description,action,dedupe_key,now()))
+        db.execute("INSERT OR IGNORE INTO notifications(patient_id,type,title,description,action,dedupe_key,created_at) VALUES(?,?,?,?,?,?,?)",(patient_id,kind,title,seal(description),action,dedupe_key,now()))
 
 
 def notifications(patient_id):
@@ -237,7 +238,8 @@ def save_plan(doctor_id, patient_id, plan, plan_id=None):
         if not _authorized_patient(db,doctor_id,patient_id):
             raise PermissionError('Patient access has not been granted.')
         stamp=now()
-        fields=(*[json.dumps(v) if k in ('times','days') else v for k,v in values.items()],stamp)
+        fields=(*[json.dumps(v) if k in ('times','days') else seal(v) if k in ('name','dosage','instructions','notes') else v
+                 for k,v in values.items()],stamp)
         later=False
         if plan_id is None:
             cursor=db.execute("""INSERT INTO medication_plans(patient_id,doctor_id,name,dosage,instructions,times_json,days_json,start_date,end_date,notes,created_at,updated_at)
@@ -257,7 +259,7 @@ def save_plan(doctor_id, patient_id, plan, plan_id=None):
             db.execute("""UPDATE medication_plans SET name=?,dosage=?,instructions=?,times_json=?,days_json=?,start_date=?,end_date=?,notes=?,updated_at=?
                       WHERE id=?""",(*fields,plan_id))
             action='edited'
-        db.execute("INSERT INTO medication_audit(plan_id,doctor_id,action,details_json,created_at) VALUES(?,?,?,?,?)",(plan_id,doctor_id,action,json.dumps(values),stamp))
+        db.execute("INSERT INTO medication_audit(plan_id,doctor_id,action,details_json,created_at) VALUES(?,?,?,?,?)",(plan_id,doctor_id,action,seal(json.dumps(values)),stamp))
     notify(patient_id,'medication','Medication plan updated',f"Your doctor {action} a plan for {values['name']}."+(
         " The new schedule starts tomorrow; today's doses stay as they were." if later else ''),'medications',f'plan-{plan_id}-{stamp}')
     alerts.plan_changed(patient_id,'medication')
@@ -387,7 +389,7 @@ _PREVENTION_SELECT="SELECT p.*,u.name doctor_name FROM prevention_plans p JOIN u
 
 def _prevention_audit(db, plan_id, doctor_id, action, details, stamp=None):
     db.execute("INSERT INTO prevention_audit(plan_id,doctor_id,action,details_json,created_at) VALUES(?,?,?,?,?)",
-               (plan_id,doctor_id,action,json.dumps(details),stamp or now()))
+               (plan_id,doctor_id,action,seal(json.dumps(details)),stamp or now()))
 
 
 def _prevention_row(r):
@@ -455,12 +457,12 @@ def _sync_goals(db, patient_id, targets):
     if goals:
         row=db.execute("SELECT goals_json FROM lifestyle_goals WHERE patient_id=?",(patient_id,)).fetchone()
         db.execute("INSERT INTO lifestyle_goals VALUES(?,?,?) ON CONFLICT(patient_id) DO UPDATE SET goals_json=excluded.goals_json,updated_at=excluded.updated_at",
-                   (patient_id,json.dumps({**(json.loads(row['goals_json']) if row else {}),**goals}),now()))
+                   (patient_id,seal(json.dumps({**(json.loads(row['goals_json']) if row else {}),**goals})),now()))
     return goals
 
 
 def _plan_fields(values):
-    return (values['disease'],values['screening_id'],json.dumps(values['targets']),values['note'],values['recheck_date'])
+    return (values['disease'],values['screening_id'],seal(json.dumps(values['targets'])),seal(values['note']),values['recheck_date'])
 
 
 def _own_draft(db, doctor_id, patient_id, plan_id):
@@ -561,7 +563,7 @@ def update_prevention_plan(doctor_id, plan_id, plan):
         if all(values[k]==v for k,v in before.items()):
             return False
         db.execute("UPDATE prevention_plans SET targets_json=?,note=?,recheck_date=?,updated_at=? WHERE id=?",
-                   (json.dumps(values['targets']),values['note'],values['recheck_date'],stamp,plan_id))
+                   (seal(json.dumps(values['targets'])),seal(values['note']),values['recheck_date'],stamp,plan_id))
         _prevention_audit(db,plan_id,doctor_id,'edited',{**_plan_details(values),'before':before},stamp)
         if row['status']=='active':
             _sync_goals(db,row['patient_id'],values['targets'])
@@ -695,7 +697,7 @@ def append_record_prediction(owner_id, record_id, disease, values, score, thresh
         if not db.execute('SELECT 1 FROM records WHERE id=? AND owner_id=? AND disease=?',(record_id,owner_id,disease)).fetchone():
             raise PermissionError('Record access denied.')
         db.execute('INSERT INTO record_predictions(record_id,owner_id,disease,values_json,score,threshold,model,source,created_at) VALUES(?,?,?,?,?,?,?,?,?)',
-                   (record_id,owner_id,disease,json.dumps(values),score,threshold,model,source,now()))
+                   (record_id,owner_id,disease,seal(json.dumps(values)),score,threshold,model,source,now()))
 
 
 def record_prediction_history(owner_id, record_id):

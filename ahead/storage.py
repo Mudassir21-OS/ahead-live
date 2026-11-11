@@ -5,10 +5,12 @@ import hmac
 import json
 import logging
 import os
+import re
 import secrets
 from datetime import datetime, timezone
 
 from ahead import db as database
+from ahead.fieldcrypt import seal
 from ahead.config import ROLE_ADMIN, ROLE_DOCTOR, ROLE_PATIENT
 
 connection = database.connection
@@ -68,8 +70,10 @@ def _sqlite_repairs():
         if db.execute("PRAGMA user_version").fetchone()[0] >= 1:
             return
         # Values once blocked by the exact training range ("...; verify it.") are rechecked against the wider bounds.
-        legacy = db.execute("SELECT id,disease,status,values_json,issues_json FROM records WHERE issues_json LIKE ?",
-                            ("%is outside the training range (%; verify it.%",)).fetchall()
+        # Matched in Python, not with LIKE: issues may be stored encrypted (rows come back decrypted).
+        legacy = [row for row in db.execute("SELECT id,disease,status,values_json,issues_json FROM records "
+                                            "WHERE issues_json NOT IN ('','[]')").fetchall()
+                  if re.search(r"is outside the training range \(.*; verify it\.", row["issues_json"])]
         if legacy:
             _recheck_old_ranges(db, legacy)
         # Uploads were once saved without a status, so valid unscored rows were left 'Incomplete'.
@@ -117,7 +121,7 @@ def _recheck_old_ranges(db, rows):
             old = " is outside the training range (" in issue and issue.endswith("; verify it.") and feature in stats
             issues += validate_row(values, row["disease"], [feature], stats)[1] if old else [issue]
         status = "Ready" if not issues and row["status"] == "Incomplete" else row["status"]
-        updates.append((json.dumps(issues), status, row["id"]))
+        updates.append((seal(json.dumps(issues)), status, row["id"]))
     db.executemany("UPDATE records SET issues_json=?,status=? WHERE id=?", updates)
 
 
@@ -209,8 +213,8 @@ def insert_records(owner_id, cohort, disease, rows, source_name=None):
         for index, row in enumerate(rows, 1):
             db.execute("""INSERT INTO records(owner_id,cohort,disease,patient_id,source_row,values_json,dob,issues_json,status,created_at,updated_at,source_name)
                        VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
-                       (owner_id, cohort, disease, row["patient_id"], index, json.dumps(row["values"]),
-                        row.get("dob"), json.dumps(row["issues"]), "Incomplete" if row["issues"] else "Ready", now, now,
+                       (owner_id, cohort, disease, row["patient_id"], index, seal(json.dumps(row["values"])),
+                        seal(row.get("dob")), seal(json.dumps(row["issues"])), "Incomplete" if row["issues"] else "Ready", now, now,
                         source_name))
 
 
@@ -227,7 +231,8 @@ def list_records(owner_id, disease=None):
 
 def update_record(owner_id, record_id, **fields):
     allowed = {"values_json", "dob", "issues_json", "status", "note", "model", "score", "threshold"}
-    fields = {k: v for k, v in fields.items() if k in allowed}
+    fields = {k: seal(v) if k in ("values_json", "dob", "issues_json", "note") else v
+              for k, v in fields.items() if k in allowed}
     if not fields:
         return
     fields["updated_at"] = datetime.now(timezone.utc).isoformat()
@@ -244,15 +249,15 @@ def save_scoring_run(owner_id, disease, model, threshold, scored, invalid=(), so
     where = "WHERE id=? AND owner_id=? AND disease=?"
     with connection() as db:
         db.executemany(f"UPDATE records SET values_json=?,issues_json=?,status='Incomplete',score=NULL,model=NULL,threshold=NULL,updated_at=? {where}",
-                       [(json.dumps(values), json.dumps(issues), now, record_id, owner_id, disease)
+                       [(seal(json.dumps(values)), seal(json.dumps(issues)), now, record_id, owner_id, disease)
                         for record_id, values, issues in invalid])
         db.executemany(f"UPDATE records SET values_json=?,issues_json='[]',status=?,score=?,model=?,threshold=?,updated_at=? {where}",
-                       [(json.dumps(values), "Flagged" if score >= threshold else "Ready", score, model, threshold, now,
+                       [(seal(json.dumps(values)), "Flagged" if score >= threshold else "Ready", score, model, threshold, now,
                          record_id, owner_id, disease) for record_id, values, score in scored])
         # INSERT ... SELECT keeps the ownership check of append_record_prediction without a query per row.
         db.executemany(f"""INSERT INTO record_predictions(record_id,owner_id,disease,values_json,score,threshold,model,source,created_at)
                            SELECT id,owner_id,disease,?,?,?,?,?,? FROM records {where}""",
-                       [(json.dumps(values), score, threshold, model, source, now, record_id, owner_id, disease)
+                       [(seal(json.dumps(values)), score, threshold, model, source, now, record_id, owner_id, disease)
                         for record_id, values, score in scored])
 
 
@@ -267,7 +272,7 @@ def save_screening(owner_id, disease, model, score, prediction, threshold, value
         cursor = db.execute("""INSERT INTO screenings(owner_id,disease,model,score,prediction,threshold,created_at,values_json,source,previous_id)
                                VALUES(?,?,?,?,?,?,?,?,?,?)""",
                             (owner_id, disease, model, score, prediction, threshold,
-                             datetime.now(timezone.utc).isoformat(), json.dumps(values or {}), source, previous_id))
+                             datetime.now(timezone.utc).isoformat(), seal(json.dumps(values or {})), source, previous_id))
         return cursor.lastrowid
 
 

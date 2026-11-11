@@ -25,6 +25,8 @@ services:
         sync: false
       - key: AHEAD_TASK_KEY        # optional: long random value; lets the GitHub Actions schedule send weekly summaries
         sync: false
+      - key: AHEAD_FIELD_KEY       # encrypts health values (ahead/fieldcrypt.py). LOSING IT LOSES THE DATA: keep a copy
+        sync: false
       - key: AHEAD_TRUST_PROXY     # proxy hops in front of the app on Render, for real visitor addresses
         value: "3"
       - key: AHEAD_DB_POOL_SIZE
