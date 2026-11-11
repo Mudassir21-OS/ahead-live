@@ -273,6 +273,10 @@ def _startup():
         # Better no site than pages that can't read their data: Render keeps the previous deploy running.
         print(f"AHEAD can't start: {error}", flush=True)
         raise
+    problem = accounts.public_url_problem()
+    if problem:
+        print(f"AHEAD can't start: {problem}", flush=True)
+        raise SystemExit(1)
     try:
         accounts.prune()
     except Exception:

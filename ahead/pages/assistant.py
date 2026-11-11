@@ -257,14 +257,19 @@ def _read_aloud(text: str) -> None:
 
 def _reply(history: list, is_doctor: bool = False) -> str:
     """Send the transcript as proper user/model turns with a system instruction."""
-    turns = [{"role": "user" if m["role"] == "user" else "model", "text": m["content"]} for m in history[-12:]]
-    return chat_reply(DOCTOR_SYSTEM_PROMPT if is_doctor else SYSTEM_PROMPT, turns)
+    return chat_reply(DOCTOR_SYSTEM_PROMPT if is_doctor else SYSTEM_PROMPT, _turns(history))
+
+
+def _turns(history: list) -> list:
+    """The last 12 messages as Gemini turns. Questions answered here from the patient's own data (today's doses,
+    their score) are left out, with their answers: that data never goes to Gemini."""
+    return [{"role": "user" if m["role"] == "user" else "model", "text": m["content"]}
+            for m in history if not m.get("local")][-12:]
 
 
 def _reply_stream(history: list, is_doctor: bool = False):
     """_reply, streamed piece by piece (same turns and instructions)."""
-    turns = [{"role": "user" if m["role"] == "user" else "model", "text": m["content"]} for m in history[-12:]]
-    return chat_stream(DOCTOR_SYSTEM_PROMPT if is_doctor else SYSTEM_PROMPT, turns)
+    return chat_stream(DOCTOR_SYSTEM_PROMPT if is_doctor else SYSTEM_PROMPT, _turns(history))
 
 
 def _safe_stream(pieces):
@@ -288,9 +293,10 @@ def _first_and_rest(pieces):
     return itertools.chain([] if first is None else [first], pieces)
 
 
-def _append(role: str, content: str, voice: bool = False) -> None:
+def _append(role: str, content: str, voice: bool = False, local: bool = False) -> None:
     # Asia/Dubai like every other page; datetime.now() would follow the server clock (UTC when hosted).
-    st.session_state.chat_messages.append({"role": role, "content": content, "time": local_now(), "voice": voice})
+    st.session_state.chat_messages.append({"role": role, "content": content, "time": local_now(), "voice": voice,
+                                           "local": local})
 
 
 def _sync_speak_pref() -> None:
@@ -416,6 +422,9 @@ def render_assistant() -> None:
             st.markdown(prompt)
         with st.chat_message("assistant", avatar=robot):
             answer = None if user["is_doctor"] else _status_answer(prompt, st.session_state.user["id"])
+            local = bool(answer)
+            if local:
+                st.session_state.chat_messages[-1]["local"] = True   # this question and its answer stay out of Gemini
             if not answer and gemini_available():
                 # Stream: the spinner shows only until the first words arrive, then the answer writes itself out.
                 with st.spinner("Thinking…"):
@@ -430,7 +439,7 @@ def render_assistant() -> None:
                         "reached). Try one of the suggested questions above — the screening tools work normally without me."
                     )
                 st.markdown(answer)
-        _append("assistant", answer)
+        _append("assistant", answer, local=local)
         if spoken and pref("speak_replies"):
             st.session_state.speak_now = answer
         st.rerun()

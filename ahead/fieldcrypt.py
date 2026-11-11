@@ -126,12 +126,15 @@ def is_sealed(value):
 
 
 def seal(value):
-    """Encrypt one text value with the current key. None, empty values and already-encrypted values pass through,
-    and so does everything when no key is set."""
-    if value is None or not isinstance(value, str) or value in EMPTY or value.startswith(PREFIX):
+    """Encrypt one text value with the current key. None, empty values and values that really are encrypted with
+    one of our keys pass through, and so does everything when no key is set. Text that only looks encrypted (a
+    name or medicine typed as "enc1:...") is encrypted like any other text: it must never be stored as it is."""
+    if value is None or not isinstance(value, str) or value in EMPTY:
         return value
     found = keys()
     if not found:
+        return value
+    if value.startswith(PREFIX) and _try_open(value) is not None:
         return value
     kid, cipher = found[0]
     nonce = os.urandom(12)
@@ -157,11 +160,29 @@ def open_text(value):
         raise FieldKeyError("A stored value could not be decrypted (damaged, or the key doesn't match).") from None
 
 
+def _try_open(value):
+    """The plain text of a value encrypted with one of our keys, else None (plain text, look-alikes, damage)."""
+    try:
+        return open_text(value)
+    except FieldKeyError:
+        return None
+
+
+def _reveal_one(value):
+    plain = _try_open(value)
+    if plain is None:
+        # Not our ciphertext: user text that starts with "enc1:" (any column, e.g. a name typed at sign-up).
+        # Shown as typed rather than breaking every page that reads the row. Values under a missing key can't
+        # get this far: start-up refuses to run without every stored key (check()).
+        return value
+    return plain
+
+
 def reveal(values):
     """A database row's values with any encrypted text decrypted (ahead/db.py calls this for every row)."""
     for value in values:
         if isinstance(value, str) and value.startswith(PREFIX):
-            return tuple(open_text(v) if isinstance(v, str) and v.startswith(PREFIX) else v for v in values)
+            return tuple(_reveal_one(v) if isinstance(v, str) and v.startswith(PREFIX) else v for v in values)
     return values
 
 
@@ -223,6 +244,12 @@ def pending():
     return counts
 
 
+def _plain_or_as_is(value):
+    """For re-encryption: our ciphertext opened, anything else (older plain text, even "enc1:..." look-alikes) kept."""
+    plain = _try_open(value)   # plain text comes back as it is
+    return value if plain is None else plain
+
+
 def encrypt_existing(batch=200, max_rounds=10_000):
     """Encrypt values saved before the key was set, and re-encrypt values under an older key. Safe to run while
     the site is in use: each value is replaced only if it hasn't changed since it was read. Returns the count."""
@@ -240,7 +267,7 @@ def encrypt_existing(batch=200, max_rounds=10_000):
             if not rows:
                 break
             # Encrypted outside the write transaction, so the site's own writes are never held up for long.
-            updates = [(seal(open_text(row["val"])), row["pk"], row["val"]) for row in rows if _needs_work(row["val"], kid)]
+            updates = [(seal(_plain_or_as_is(row["val"])), row["pk"], row["val"]) for row in rows if _needs_work(row["val"], kid)]
             with database.connection(decrypt=False) as conn:
                 for new, key, old in updates:
                     done += conn.execute(f"UPDATE {table} SET {column}=? WHERE {pk}=? AND {column}=?", (new, key, old)).rowcount
@@ -253,23 +280,35 @@ def encrypt_existing(batch=200, max_rounds=10_000):
 
 def decrypt_existing(batch=200):
     """Turn every encrypted value back into plain text (scripts/field_key.py decrypt-all), for going back to a
-    version of AHEAD without encryption. Needs every key the values were encrypted with. Returns the count."""
+    version of AHEAD without encryption. Needs every key the values were encrypted with. Returns the count.
+    Text that only looks encrypted is left as it is (it already is plain text)."""
     from ahead import db as database
     done = 0
     for table, pk, column in _columns():
+        last = None   # walk the table once in key order, so rows changed meanwhile or look-alikes can't loop
         while True:
             with database.connection(decrypt=False) as conn:
-                rows = conn.execute(f"SELECT {pk} pk,{column} val FROM {table} WHERE {column} LIKE ? ORDER BY {pk} LIMIT ?",
-                                    (PREFIX + "%", batch)).fetchall()
+                rows = conn.execute(f"SELECT {pk} pk,{column} val FROM {table} WHERE {column} LIKE ?"
+                                    + (f" AND {pk}>?" if last is not None else "") + f" ORDER BY {pk} LIMIT ?",
+                                    (PREFIX + "%", *(() if last is None else (last,)), batch)).fetchall()
             if not rows:
                 break
-            updates = [(open_text(row["val"]), row["pk"], row["val"]) for row in rows]
-            changed = 0
+            last = rows[-1]["pk"]
+            updates = [(plain, row["pk"], row["val"]) for row in rows if (plain := _try_open(row["val"])) is not None]
             with database.connection(decrypt=False) as conn:
                 for plain, key, old in updates:
-                    changed += conn.execute(f"UPDATE {table} SET {column}=? WHERE {pk}=? AND {column}=?", (plain, key, old)).rowcount
-            done += changed
-            if not changed:   # every row changed meanwhile (the site is still running): stop rather than spin
+                    done += conn.execute(f"UPDATE {table} SET {column}=? WHERE {pk}=? AND {column}=?", (plain, key, old)).rowcount
+            if len(rows) < batch:
                 break
     return done
 
+
+def remaining_encrypted():
+    """How many stored values are still our ciphertext (0 after a complete decrypt-all)."""
+    from ahead import db as database
+    left = 0
+    with database.connection(decrypt=False) as conn:
+        for table, _, column in _columns():
+            for row in conn.execute(f"SELECT {column} val FROM {table} WHERE {column} LIKE ?", (PREFIX + "%",)).fetchall():
+                left += _try_open(row["val"]) is not None
+    return left

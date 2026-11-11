@@ -15,7 +15,7 @@ from ahead import accounts, alerts, mailer
 from ahead.pages.calendar_panel import render_calendar_panel
 from ahead.pages.consent_page import render_privacy_panel
 from ahead.session import request_ip
-from ahead.storage import change_password, delete_records, delete_screenings, update_profile, update_preferences
+from ahead.storage import change_password, password_ok, delete_records, delete_screenings, update_profile, update_preferences
 from ahead.platform_data import doctors_for, grant_doctor, revoke_doctor, ai_consent, plans, prevention_plans
 
 
@@ -119,6 +119,10 @@ def _profile_tab(user: dict) -> None:
 </div>
 """
     )
+    pending = st.session_state.get("settings_email_pending")
+    if pending:
+        st.info(f"We emailed a confirmation link to {markdown_literal(pending)}. Your email changes once you open it "
+                "(within 24 hours); until then AHEAD keeps using your current address.")
     with st.form("settings_profile_form"):
         c1, c2 = st.columns(2)
         with c1:
@@ -130,26 +134,49 @@ def _profile_tab(user: dict) -> None:
                 "Institution", value=user["institution"], disabled=not user["is_doctor"],
                 placeholder="Not applicable for patient accounts" if not user["is_doctor"] else "",
             )
+        current_pw = st.text_input("Current password (only needed to change your email)", type="password",
+                                   autocomplete="current-password", key="settings_profile_password")
         if st.form_submit_button("Save changes", type="primary"):
+            new_email = email.strip().lower()
+            changing = new_email != user["email"].strip().lower()
             if not full_name.strip():
                 st.error("Please enter your name.")
             elif "@" not in email or "." not in email.split("@")[-1]:
                 st.error("Please enter a valid email address.")
+            elif changing and not password_ok(st.session_state.user["id"], current_pw):
+                # A tab left open must not be enough to move the account (and its password resets) to another inbox.
+                st.error("To change your email, type your current password.")
             else:
-                old = {"id": st.session_state.user["id"], "email": user["email"], "name": user["name"]}
-                try:
-                    changed = update_profile(st.session_state.user["id"], full_name, email, institution)
-                except Exception:
-                    st.error("Unable to save this profile. The email may already be used.")
-                else:
-                    if changed:  # tell the old address, in case someone else made the change
-                        accounts.notify(old, "email_changed")
-                        accounts.audit("email_changed", actor_id=old["id"], target_user_id=old["id"], ip=request_ip())
-                    st.session_state.user.update(
-                        {"name": full_name.strip(), "email": email.strip().lower(), "institution": institution.strip()}
-                    )
-                    st.toast("Profile updated.", icon="✅")
-                    st.rerun()
+                _save_profile(user, full_name, new_email, institution, changing)
+
+
+def _save_profile(user, full_name, new_email, institution, changing):
+    me = st.session_state.user["id"]
+    old = {"id": me, "email": user["email"], "name": user["name"]}
+    confirm_first = changing and mailer.enabled()
+    if confirm_first:
+        outcome = accounts.request_email_change(me, new_email, request_ip())
+        if outcome == "taken":
+            st.error("Unable to save this profile. The email may already be used.")
+            return
+        if outcome == "limit":
+            st.error("Too many email changes lately. Try again in an hour.")
+            return
+    try:
+        # With emails on, the address itself only changes once the link sent to the new one is opened.
+        changed = update_profile(me, full_name, user["email"] if confirm_first else new_email, institution)
+    except Exception:
+        st.error("Unable to save this profile. The email may already be used.")
+        return
+    if changed:  # emails off: changed at once; tell the old address anyway, in case someone else did it
+        accounts.notify(old, "email_changed")
+        accounts.audit("email_changed", actor_id=me, target_user_id=me, ip=request_ip())
+    st.session_state.user.update({"name": full_name.strip(), "institution": institution.strip(),
+                                  **({} if confirm_first else {"email": new_email})})
+    if confirm_first:
+        st.session_state["settings_email_pending"] = new_email
+    st.toast("Profile updated.", icon="✅")
+    st.rerun()
 
 
 def _appearance_tab() -> None:

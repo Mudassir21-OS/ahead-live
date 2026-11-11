@@ -197,6 +197,13 @@ def update_profile(user_id, name, email, institution):
     return bool(old) and old["email"] != email
 
 
+def password_ok(user_id, password):
+    """True when this is the account's current password (asked again before changing the email address)."""
+    with connection() as db:
+        row = db.execute("SELECT password_hash FROM users WHERE id=?", (user_id,)).fetchone()
+    return bool(row) and verify_password(password or "", row["password_hash"])
+
+
 def change_password(user_id, current, new):
     with connection() as db:
         row = db.execute("SELECT password_hash FROM users WHERE id=?", (user_id,)).fetchone()

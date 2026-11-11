@@ -190,7 +190,7 @@ class DoctorHomeHelperTests(unittest.TestCase):
     def test_label_text_escapes_markdown(self):
         self.assertEqual(overview.markdown_literal('amy_lee*@x.com'),r'amy\_lee\*\@x\.com')
         self.assertEqual(overview.markdown_literal('Layla'),'Layla')
-        self.assertEqual(overview.markdown_literal('![t](https://x.example/p.png)'),r'\!\[t\]\(https\:\/\/x\.example\/p\.png\)')
+        self.assertEqual(overview.markdown_literal('![t](https://x.example/p.png)'),'\\!\\[t\\]\\(https​\\:\\/\\/x\\.example\\/p\\.png\\)')   # 3c: no auto-link either
 
 
 if __name__=='__main__':

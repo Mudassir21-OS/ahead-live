@@ -49,13 +49,16 @@ SETUP_DAYS = 3
 RESET_MINUTES = 60
 VERIFY_HOURS = 24
 LINK_LIFE = {"setup": timedelta(days=SETUP_DAYS), "reset": timedelta(minutes=RESET_MINUTES),
-             "verify": timedelta(hours=VERIFY_HOURS)}
+             "verify": timedelta(hours=VERIFY_HOURS), "email_change": timedelta(hours=VERIFY_HOURS)}
 
 # Sign-in limits. Only failures count, by email + address and by address alone, so a class sharing
 # campus Wi-Fi is not blocked by one person's typos.
 FAIL_WINDOW = timedelta(minutes=15)
 FAILS_PER_ACCOUNT = 5
 FAILS_PER_ADDRESS = 50
+# Across every network: slows password guessing spread over many addresses, but stays high enough that a
+# stranger can't easily lock someone out on purpose.
+FAILS_PER_EMAIL = 30
 SIGNUP_WINDOW = timedelta(hours=1)
 SIGNUPS_PER_ADDRESS = 5
 # Self-service emails: a reset request or a new confirmation link, per email address and per network.
@@ -157,14 +160,18 @@ def sign_in_blocked(email, ip):
     """True when this account (from this address) or this address has failed too often lately."""
     since = _now() - FAIL_WINDOW
     with connection() as db:
-        return (_count(db, "login_fail", f"{(email or '').strip().lower()}|{ip}", since) >= FAILS_PER_ACCOUNT
-                or (bool(ip) and _count(db, "login_fail_ip", ip, since) >= FAILS_PER_ADDRESS))
+        email = (email or "").strip().lower()
+        return (_count(db, "login_fail", f"{email}|{ip}", since) >= FAILS_PER_ACCOUNT
+                or (bool(ip) and _count(db, "login_fail_ip", ip, since) >= FAILS_PER_ADDRESS)
+                or (bool(email) and _count(db, "login_fail_email", email, since) >= FAILS_PER_EMAIL))
 
 
 def record_failed_sign_in(email, ip):
     email = (email or "").strip().lower()
     with connection() as db:
         _add_event(db, "login_fail", f"{email}|{ip}")
+        if email:
+            _add_event(db, "login_fail_email", email)
         if ip:
             _add_event(db, "login_fail_ip", ip)
         blocked_now = _count(db, "login_fail", f"{email}|{ip}", _now() - FAIL_WINDOW) == FAILS_PER_ACCOUNT
@@ -325,8 +332,9 @@ def keep_session_after_password_change(session_id, user_id):
 # ONE-TIME LINKS (account set-up, password reset)
 # =============================================================================
 
-def issue_link(user_id, purpose, created_by=None):
-    """A new one-time token for 'setup', 'reset' or 'verify'; earlier unused ones of that kind stop working."""
+def issue_link(user_id, purpose, created_by=None, new_email=None):
+    """A new one-time token for 'setup', 'reset', 'verify' or 'email_change' (with the address waiting for
+    confirmation); earlier unused ones of that kind stop working."""
     if purpose not in LINK_LIFE:
         raise ValueError(purpose)
     token = secrets.token_urlsafe(32)
@@ -335,8 +343,8 @@ def issue_link(user_id, purpose, created_by=None):
     with connection() as db:
         db.execute("UPDATE account_tokens SET used_at=? WHERE user_id=? AND purpose=? AND used_at IS NULL",
                    (_stamp(now), user_id, purpose))
-        db.execute("INSERT INTO account_tokens(user_id,purpose,token_hash,created_by,created_at,expires_at) VALUES(?,?,?,?,?,?)",
-                   (user_id, purpose, _hash(token), created_by, _stamp(now), _stamp(now + life)))
+        db.execute("INSERT INTO account_tokens(user_id,purpose,token_hash,created_by,created_at,expires_at,new_email) "
+                   "VALUES(?,?,?,?,?,?,?)", (user_id, purpose, _hash(token), created_by, _stamp(now), _stamp(now + life), new_email))
     return token
 
 
@@ -414,22 +422,66 @@ def send_verification(user_id, ip=""):
 
 
 def verify_email(token, ip=""):
-    """Open a confirmation link (once). Returns the user, or None for an unknown, used or expired link."""
+    """Open a confirmation link (once): a new account's address, or a changed address (which only now replaces
+    the old one). Returns the user, or None for an unknown, used or expired link (or an address taken meanwhile)."""
     if not token or len(token) > 200:
         return None
     now = _stamp()
+    old = None
     with connection() as db:
-        row = db.execute("SELECT id,user_id FROM account_tokens WHERE token_hash=? AND purpose='verify' AND used_at IS NULL "
-                         "AND expires_at>=?", (_hash(token), now)).fetchone()
+        row = db.execute("SELECT id,user_id,purpose,new_email FROM account_tokens WHERE token_hash=? "
+                         "AND purpose IN ('verify','email_change') AND used_at IS NULL AND expires_at>=?",
+                         (_hash(token), now)).fetchone()
         if not row or not db.execute("UPDATE account_tokens SET used_at=? WHERE id=? AND used_at IS NULL",
                                      (now, row["id"])).rowcount:
             return None
         user = db.execute("SELECT * FROM users WHERE id=?", (row["user_id"],)).fetchone()
         if not user or not user["is_active"]:
             return None
-        db.execute("UPDATE users SET email_verified_at=COALESCE(email_verified_at,?) WHERE id=?", (now, row["user_id"]))
-    audit("email_verified", actor_id=row["user_id"], target_user_id=row["user_id"], ip=ip)
+        if row["purpose"] == "email_change":
+            new_email = (row["new_email"] or "").strip().lower()
+            if not new_email or db.execute("SELECT 1 FROM users WHERE email=? AND id!=?", (new_email, user["id"])).fetchone():
+                return None
+            old = {"id": user["id"], "email": user["email"], "name": user["name"]}
+            db.execute("UPDATE users SET email=?,email_verified_at=? WHERE id=?", (new_email, now, user["id"]))
+        else:
+            db.execute("UPDATE users SET email_verified_at=COALESCE(email_verified_at,?) WHERE id=?", (now, row["user_id"]))
+        user = db.execute("SELECT * FROM users WHERE id=?", (row["user_id"],)).fetchone()
+    if old:
+        audit("email_changed", actor_id=old["id"], target_user_id=old["id"], ip=ip)
+        notify(old, "email_changed")   # the old address hears about it, in case someone else did this
+    else:
+        audit("email_verified", actor_id=row["user_id"], target_user_id=row["user_id"], ip=ip)
     return user_view(user)
+
+
+def notify_sign_up_attempt(email, ip=""):
+    """Someone tried to register an address that already has an account: tell its owner (within the email limits)."""
+    from ahead import mailer
+    with connection() as db:
+        row = db.execute("SELECT id,email,name,is_active FROM users WHERE email=?", ((email or "").strip().lower(),)).fetchone()
+    if not row or not row["is_active"] or not _email_allowed(f"signup_exists|{row['id']}", ip):
+        return False
+    return mailer.queue(row["email"], "signup_exists", row["id"], row["name"], site=site_url()) is not None
+
+
+def request_email_change(user_id, new_email, ip=""):
+    """Email a confirmation link to a new address. The old address stays in use until the link is opened.
+    Returns 'sent', 'taken', 'limit' (too many requests) or 'off' (emails are switched off)."""
+    from ahead import mailer
+    new_email = (new_email or "").strip().lower()
+    if not mailer.enabled():
+        return "off"
+    with connection() as db:
+        if db.execute("SELECT 1 FROM users WHERE email=? AND id!=?", (new_email, user_id)).fetchone():
+            return "taken"
+        row = db.execute("SELECT name FROM users WHERE id=?", (user_id,)).fetchone()
+    if not _email_allowed(f"email_change|{user_id}", ip):
+        return "limit"
+    token = issue_link(user_id, "email_change", new_email=new_email)
+    mailer.queue(new_email, "email_change", user_id, row["name"] if row else "", link=f"{site_url()}/?verify={token}")
+    audit("email_change_requested", actor_id=user_id, target_user_id=user_id, ip=ip)
+    return "sent"
 
 
 def _email_allowed(subject, ip):
@@ -483,11 +535,25 @@ def site_url_for(request):
     return f"{proto}://{request.headers.get('host', request.url.netloc)}"
 
 
+def public_url_problem():
+    """Why AHEAD must not start as configured, or "" (server.py checks this at start-up)."""
+    from ahead import mailer
+    if mailer.backend() == "brevo" and not os.environ.get("AHEAD_PUBLIC_URL", "").strip():
+        # Emailed links (reset, set-up, confirm) are built from AHEAD_PUBLIC_URL only; never from the client's address.
+        return "emails are on (BREVO_API_KEY) but AHEAD_PUBLIC_URL is not set."
+    return ""
+
+
 def site_url():
     """The public address used in emailed links (AHEAD_PUBLIC_URL; the browser's address as a fallback)."""
     configured = os.environ.get("AHEAD_PUBLIC_URL", "").strip().rstrip("/")
     if configured:
         return configured
+    from ahead import mailer
+    if mailer.backend() == "brevo":
+        # The browser's address is whatever the client claims, so it must never go into a real email
+        # (a forged one would send reset links to another site). server.py refuses to start like this.
+        return ""
     try:
         from urllib.parse import urlsplit
         import streamlit as st

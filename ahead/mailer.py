@@ -122,7 +122,9 @@ def compose(kind, name="", link="", site="", detail=None):
     """(subject, text, html) for one kind of email. No health data, medicine names or patient names in any of them.
 
     detail: the one non-health fact a notice needs (which kind of plan changed; how many updates are waiting)."""
-    hello = f"Hello {name.strip()}," if (name or "").strip() else "Hello,"
+    # No names, not even the reader's own: an inbox preview would pair a person's name with "your doctor updated
+    # your plan" (name is still accepted, so callers stay the same).
+    hello = "Hello,"
     not_you = "If this wasn't you, you can ignore this email."
     if kind == "verify":
         subject, heading = "Confirm your AHEAD email", "Confirm your email address"
@@ -147,10 +149,21 @@ def compose(kind, name="", link="", site="", detail=None):
         subject, heading = "Your AHEAD email address was changed", "Your email address was changed"
         body = [hello, "The email address on your AHEAD account was changed, so AHEAD emails will now go to the new address."]
         button, footer = None, "If you didn't do this, contact the AHEAD team."
+    elif kind == "email_change":
+        subject, heading = "Confirm your new AHEAD email", "Confirm your new email address"
+        body = [hello, "Someone asked to use this address for an AHEAD account. Confirm it to make the change: until "
+                       "then, AHEAD keeps using the old address. The link works once and expires in 24 hours."]
+        button, footer = ("Confirm this address", link), "If you didn't ask for this, ignore this email: nothing changes."
+    elif kind == "signup_exists":
+        subject, heading = "Someone tried to register with your email", "You already have an AHEAD account"
+        body = [hello, "Someone tried to create a new AHEAD account with this email address, which already has one. "
+                       "Nothing was changed. If it was you, sign in instead, or reset your password from the sign-in page."]
+        button, footer = ("Sign in", site) if site else None, "If it wasn't you, you can ignore this email."
     elif kind == "deactivated":
         subject, heading = "Your AHEAD account was switched off", "Your account was switched off"
         body = [hello, "An AHEAD administrator switched off your account, so you can't sign in for now. "
-                       "Your saved information has not been deleted."]
+                       "Your saved information has not been deleted. If the account stays switched off "
+                       "for a year, it and its saved information are deleted."]
         button, footer = None, "If you think this is a mistake, contact the AHEAD team."
     elif kind == "reactivated":
         subject, heading = "Your AHEAD account is active again", "Your account is active again"
@@ -201,7 +214,7 @@ def queue(to_email, kind, user_id=None, name="", link="", site="", priority=None
     if not enabled() or "@" not in to_email:
         return None
     if priority is None:
-        priority = PRIORITY_ACCOUNT if kind in ("verify", "reset", "setup") else PRIORITY_NOTICE
+        priority = PRIORITY_ACCOUNT if kind in ("verify", "reset", "setup", "email_change") else PRIORITY_NOTICE
     now = _now()
     subject, text, html = compose(kind, name, link, site, detail)
     with connection() as db:

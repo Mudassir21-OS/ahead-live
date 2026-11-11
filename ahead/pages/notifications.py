@@ -1,7 +1,7 @@
 """Account-scoped in-app notifications."""
 import streamlit as st
 from datetime import timedelta
-from ahead.components import go_to,page_header
+from ahead.components import go_to,markdown_literal,page_header
 from ahead.visuals import metric
 from ahead.platform_data import mark_notification,notifications,lifestyle_history,get_goals,challenge_days,notify,local_today
 from ahead.pages.medications import refresh_medication_notifications
@@ -30,8 +30,8 @@ def render_notifications():
     for row in rows:
         with st.container(border=True):
             flag='⚠️ ' if row['type']=='review' else ''   # urgent / at-risk results stand out among lower-risk ones
-            st.write(('🔵 ' if not row['read_at'] else '')+flag+f"**{row['title']}** · {row['created_at'][:16]}")
-            st.caption(row['description'])
+            st.write(('🔵 ' if not row['read_at'] else '')+flag+f"**{markdown_literal(row['title'])}** · {row['created_at'][:16]}")
+            st.caption(markdown_literal(row['description']))  # names and plan names are typed by users: show them literally
             c1,c2=st.columns(2)
             if not row['read_at'] and c1.button('Mark as read',key=f"read_{row['id']}"):
                 mark_notification(owner,row['id']);st.rerun()

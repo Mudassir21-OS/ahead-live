@@ -8,7 +8,7 @@ import pandas as pd
 import streamlit as st
 
 from ahead import accounts, consent, fieldcrypt, mailer, retention
-from ahead.components import page_header
+from ahead.components import markdown_literal, page_header
 from ahead.config import ROLE_ADMIN, ROLE_DOCTOR, ROLE_PATIENT
 from ahead.platform_data import to_local
 from ahead.session import request_ip
@@ -28,8 +28,10 @@ ACTION_LABELS = {
 EMAIL_LABELS = {"verify": "Confirm email", "reset": "Password reset", "setup": "Account set-up",
                 "password_changed": "Password changed notice", "email_changed": "Email changed notice",
                 "deactivated": "Account switched off", "reactivated": "Account switched on",
-                "plan_updated": "Plan changed", "doctor_review": "Result to review", "doctor_review_more": "More results (follow-up)",
-                "doctor_linked": "New linked patient", "weekly": "Weekly summary"}
+                "email_change": "Confirm new email", "signup_exists": "Sign-up attempt notice"}
+# Care emails (plan changed, result to review, new linked patient, weekly summary) are shown only as "Care notice":
+# which one went to whom would tell an admin that a patient has a plan or a new result.
+CARE_NOTICE = "Care notice"
 
 
 def _scheduled(row):
@@ -106,18 +108,26 @@ def _accounts(me):
         if target["is_active"]:
             if one.button("Deactivate", key="admin_deactivate", width="stretch"):
                 accounts.set_active(me["id"], chosen, False, ip)
-                st.session_state.admin_message = f"{target['name']} is deactivated and was signed out everywhere."
+                st.session_state.admin_message = f"{markdown_literal(target['name'])} is deactivated and was signed out everywhere."
                 st.rerun()
-            if two.button("Create password-reset link", key="admin_reset", width="stretch"):
-                st.session_state.admin_link = ("Reset", accounts.admin_reset_link(me["id"], chosen, ip))
+            if two.button("Email a password-reset link" if mailer.enabled() else "Create password-reset link",
+                          key="admin_reset", width="stretch"):
+                token = accounts.admin_reset_link(me["id"], chosen, ip)
+                if mailer.enabled():
+                    # Emailed to the account's own address only: an admin who could open the link could sign in as
+                    # that patient (or as a doctor, and see their patients), and admins see no health data.
+                    st.session_state.admin_message = (f"A password-reset link was emailed to {markdown_literal(target['name'])}. "
+                                                      "It works once and expires in 60 minutes.")
+                    st.rerun()
+                st.session_state.admin_link = ("Reset", token)
             if three.button("Sign out everywhere", key="admin_signout", width="stretch"):
                 accounts.admin_sign_out(me["id"], chosen, ip)
-                st.session_state.admin_message = f"{target['name']} was signed out on every device."
+                st.session_state.admin_message = f"{markdown_literal(target['name'])} was signed out on every device."
                 st.rerun()
         else:
             if one.button("Reactivate", key="admin_reactivate", width="stretch"):
                 accounts.set_active(me["id"], chosen, True, ip)
-                st.session_state.admin_message = f"{target['name']} can sign in again."
+                st.session_state.admin_message = f"{markdown_literal(target['name'])} can sign in again."
                 st.rerun()
     except ValueError as error:
         st.error(str(error))
@@ -166,15 +176,20 @@ def _data_protection():
     st.markdown("**Retention**")
     st.markdown(f"- Notifications: deleted after **{retention.NOTICE_DAYS} days**\n"
                 f"- Email records: deleted after **{retention.EMAIL_DAYS} days** (the email text is deleted once sent)\n"
+                f"- Account audit log: deleted after **{retention.AUDIT_DAYS // 365} year**\n"
                 f"- Accounts switched off: erased after **{retention.ACCOUNT_DAYS // 365} year**, unless reactivated")
     last = retention.last_run()
     if last:
         st.caption(f"Last clean-up {_when(last['at'])}: {last['notices']} notifications, {last['emails']} email records "
-                   f"and {last['accounts']} accounts removed. It runs at start-up (at most daily) and weekly.")
+                   f"and {last['accounts']} accounts removed{_audit_part(last)}. It runs at start-up (at most daily) and weekly.")
     if st.button("Run the clean-up now", key="admin_retention_run"):
         done = retention.run(force=True)
         st.success(f"Done: {done['notices']} notifications, {done['emails']} email records and {done['accounts']} "
-                   "accounts removed.")
+                   f"accounts removed{_audit_part(done)}.")
+
+
+def _audit_part(result):
+    return f" (and {result['audit']} audit entries over a year old)" if result.get("audit") else ""
 
 
 def _add(me):
@@ -222,7 +237,7 @@ def _emails():
         st.info("No emails yet.")
         return
     st.dataframe(pd.DataFrame([{
-        "Queued": _when(r["created_at"]), "To": r["to_email"], "Email": EMAIL_LABELS.get(r["kind"], r["kind"]),
+        "Queued": _when(r["created_at"]), "To": r["to_email"], "Email": EMAIL_LABELS.get(r["kind"], CARE_NOTICE),
         "Status": "Scheduled" if _scheduled(r) else r["status"].capitalize(), "Tries": r["attempts"],
         "Sent": f"Due {_when(r['next_attempt_at'])}" if _scheduled(r) else _when(r["sent_at"]),
         "Problem": r["last_error"][:120] or "—",

@@ -37,6 +37,10 @@ def main():
     if input("Decrypt every stored health value back to plain text? Type yes: ").strip().lower() != "yes":
         sys.exit("Nothing changed.")
     print(f"Decrypted {fieldcrypt.decrypt_existing()} values.")
+    left = fieldcrypt.remaining_encrypted()
+    if left:   # e.g. the site was still running and wrote new ones: roll back in Render first, then run again
+        sys.exit(f"{left} values are still encrypted. Make sure the rollback is done in Render, then run this again.")
+    print("Nothing encrypted is left.")
 
 
 if __name__ == "__main__":

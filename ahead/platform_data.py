@@ -98,7 +98,9 @@ def event(patient_id, kind):
 
 def grant_doctor(patient_id, email):
     with connection() as db:
-        doctor = db.execute("SELECT id FROM users WHERE email=? AND role='Doctor'",(email.strip().lower(),)).fetchone()
+        # Only doctors who can sign in: never share health data with a switched-off or erased account.
+        doctor = db.execute("SELECT id FROM users WHERE email=? AND role='Doctor' AND is_active=1 AND erased_at IS NULL",
+                            (email.strip().lower(),)).fetchone()
         if not doctor:
             return False
         added=db.execute("INSERT OR IGNORE INTO care_access(patient_id,doctor_id,created_at) VALUES(?,?,?)",(patient_id,doctor['id'],now())).rowcount

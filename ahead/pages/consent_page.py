@@ -11,7 +11,7 @@ from ahead.components import page_header
 from ahead.platform_data import to_local
 from ahead.session import request_ip, sign_out
 
-_CHECKED = "consent_checked_at"   # a current agreement is re-checked at most once a minute (this runs on every click)
+_CHECKED = "consent_checked_at"   # older versions cached the check here; kept so forget_check() still clears it
 
 
 def points_html():
@@ -30,12 +30,8 @@ def needs_consent(user_id, is_patient):
     """True when this patient must agree before using AHEAD."""
     if not is_patient:
         return False
-    if time.monotonic() - st.session_state.get(_CHECKED, -1e9) < 60:
-        return False
-    if consent.has_consent(user_id):
-        st.session_state[_CHECKED] = time.monotonic()
-        return False
-    return True
+    # Checked on every run (one indexed query): a withdrawal in another tab or device takes effect on the next click.
+    return not consent.has_consent(user_id)
 
 
 def forget_check():

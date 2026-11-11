@@ -155,8 +155,12 @@ def section_heading(title: str, subtitle: str = "") -> None:
 
 
 def markdown_literal(text: str) -> str:
-    """Escape Markdown punctuation so user text (names, uploaded IDs) shows literally in Markdown and widget labels."""
-    return re.sub(r"([!-/:-@\[-`{-~])", r"\\\1", str(text))
+    """Escape Markdown punctuation so user text (names, uploaded IDs) shows literally in Markdown and widget labels.
+
+    Streamlit also turns bare web addresses into links even when escaped, so an invisible zero-width space is put
+    after the scheme and after "www": a name like "https://evil.example" shows as text, not as a link."""
+    text = re.sub(r"(?i)(https?|ftp|www)(?=\s*(:|\.))", "\\1\u200b", str(text))
+    return re.sub(r"([!-/:-@\[-`{-~])", r"\\\1", text)
 
 
 def username_hint(email: str) -> None:

@@ -159,7 +159,9 @@ holds health data, so a shared or family computer must not stay signed in once t
 **Emails** (Brevo's HTTPS API, `ahead/mailer.py`) are off until `BREVO_API_KEY` is set. When on: new patients
 confirm their email before the first sign-in, "Forgot your password?" emails a reset link, new doctors get their
 set-up link by email, and people are told when their password or email changes or their account is switched off
-or on. Emails never contain health information. They wait in an outbox table with retries, a daily budget
+or on. Changing your email in Settings needs your current password, and the new address only takes over once its
+confirmation link is opened. Admin password-reset links go only to the account's own inbox. Emails never contain
+health information or anyone's name. `AHEAD_PUBLIC_URL` is required once emails are on (emailed links use only it). They wait in an outbox table with retries, a daily budget
 (`AHEAD_EMAIL_DAILY_LIMIT`, default 250) and per-recipient caps; the text is deleted once sent.
 
 **Notifications and optional emails** (`ahead/alerts.py`). Doctors have a Notifications page too: a new linked

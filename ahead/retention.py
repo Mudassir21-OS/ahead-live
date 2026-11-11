@@ -1,6 +1,9 @@
 """Data retention (Phase 3b): what AHEAD deletes, and when.
 
-* In-app notifications: deleted 90 days after they were created.
+* In-app notifications: deleted 90 days after they were created. "Time to screen again" notices are kept while
+  their plan exists: they mark that the reminder was given, and deleting them would bring it back.
+* The account audit log (sign-ins, admin actions, consent): deleted after one year. When an account is erased,
+  its entries lose their network address and details, and a patient's lose the link to the account.
 * Email records (the admin's Emails list): deleted 30 days after they were queued; the email text itself is
   already removed as soon as it is sent (ahead/mailer.py).
 * Accounts switched off by an admin: erased one year after they were switched off, unless reactivated first.
@@ -23,6 +26,7 @@ from ahead.storage import connection
 log = logging.getLogger(__name__)
 
 NOTICE_DAYS = 90
+AUDIT_DAYS = 365
 EMAIL_DAYS = 30
 ACCOUNT_DAYS = 365
 MIN_GAP = timedelta(hours=20)
@@ -64,8 +68,10 @@ def run(force=False):
     if not force and previous and now - datetime.fromisoformat(previous["at"]) < MIN_GAP:
         return {"skipped": previous["at"]}
     with connection() as db:
-        notices = db.execute("DELETE FROM notifications WHERE created_at<?",
-                             (_stamp(now - timedelta(days=NOTICE_DAYS)),)).rowcount
+        notices = db.execute("DELETE FROM notifications WHERE created_at<? AND (dedupe_key IS NULL OR dedupe_key NOT LIKE ?)",
+                             (_stamp(now - timedelta(days=NOTICE_DAYS)), "prevention-recheck-%")).rowcount
+        audit_rows = db.execute("DELETE FROM audit_log WHERE created_at<?",
+                                (_stamp(now - timedelta(days=AUDIT_DAYS)),)).rowcount
     from ahead import mailer
     emails = mailer.prune(EMAIL_DAYS)
     with connection() as db:
@@ -77,7 +83,8 @@ def run(force=False):
             erased += erase_account(user_id)
         except Exception:   # one account must not stop the rest; it is tried again next time
             log.exception("could not erase account %s", user_id)
-    result = {"at": _stamp(now), "notices": max(notices, 0), "emails": emails, "accounts": erased}
+    result = {"at": _stamp(now), "notices": max(notices, 0), "emails": emails, "accounts": erased,
+              "audit": max(audit_rows, 0)}
     _save_run(result)
     if notices or emails or erased:
         log.info("retention: removed %s notices, %s email records, %s accounts", notices, emails, erased)
@@ -116,7 +123,12 @@ def erase_account(user_id):
         for table in ("calendar_feeds", "sessions", "account_tokens", "consents"):
             db.execute(f"DELETE FROM {table} WHERE user_id=?", (user_id,))
         db.execute("DELETE FROM email_outbox WHERE user_id=? OR to_email=?", (user_id, email))
-        db.execute("DELETE FROM rate_events WHERE subject=?", (email,))
+        db.execute("DELETE FROM rate_events WHERE subject=? OR subject LIKE ?", (email, email + "|%"))
+        # The audit trail keeps that something happened, not from where; a removed patient's rows lose the link too.
+        db.execute("UPDATE audit_log SET ip='',details_json='{}' WHERE actor_id=? OR target_user_id=?", (user_id, user_id))
+        if role == ROLE_PATIENT:
+            db.execute("UPDATE audit_log SET actor_id=NULL WHERE actor_id=?", (user_id,))
+            db.execute("UPDATE audit_log SET target_user_id=NULL WHERE target_user_id=?", (user_id,))
         if role == ROLE_PATIENT:
             db.execute("DELETE FROM users WHERE id=?", (user_id,))
         else:

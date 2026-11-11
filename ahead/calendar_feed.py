@@ -92,6 +92,10 @@ def ics_for_token(token, site=""):
                          "WHERE f.token=?", (token,)).fetchone()
         if not row or not row["is_active"] or row["role"] != "Patient":
             return None
+    from ahead import consent
+    if not consent.has_consent(row["user_id"]):   # withdrawn (or never given): the feed stops until they agree again
+        return None
+    with connection() as db:
         db.execute("UPDATE calendar_feeds SET last_fetched_at=? WHERE user_id=?", (_now().isoformat(), row["user_id"]))
     return build_ics(row["user_id"], bool(row["show_names"]), site)
 

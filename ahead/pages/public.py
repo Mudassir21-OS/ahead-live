@@ -117,7 +117,13 @@ def _register(name: str, email: str, password: str, confirm: str, agreed: bool =
         return False, "This email address is reserved."
     accounts.record_sign_up(ip)
     confirm_by_email = mailer.enabled()
+    created_text = (f"Account created. We've emailed a confirmation link to {email}. Open it, then sign in. "
+                    "It can take a minute, and it may land in Junk or Spam.")
     if not create_user(email, password, ROLE_PATIENT, name.strip()[:120], verified=not confirm_by_email):
+        if confirm_by_email:
+            # Same reply as a new account, so sign-up can't be used to find out who has one; the owner hears instead.
+            accounts.notify_sign_up_attempt(email, ip)
+            return True, created_text
         return False, "That email is already registered."
     from ahead.storage import connection
     with connection() as db:
@@ -126,8 +132,7 @@ def _register(name: str, email: str, password: str, confirm: str, agreed: bool =
     consent.give(user_id, ip)
     if confirm_by_email:
         accounts.send_verification(user_id, ip)
-        return True, (f"Account created. We've emailed a confirmation link to {email}. Open it, then sign in. "
-                      "It can take a minute, and it may land in Junk or Spam.")
+        return True, created_text
     return True, "Account created. Sign in above."
 
 

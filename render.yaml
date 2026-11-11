@@ -17,7 +17,7 @@ services:
         sync: false
       - key: GEMINI_API_KEY        # optional: AI assistant, insights and food photos
         sync: false
-      - key: AHEAD_PUBLIC_URL      # e.g. https://ahead.onrender.com (set after the first deploy; used in links)
+      - key: AHEAD_PUBLIC_URL      # e.g. https://ahead.onrender.com (required once BREVO_API_KEY is set: emailed links use only this)
         sync: false
       - key: BREVO_API_KEY         # optional: turns on account emails (confirm, reset, set-up, notices)
         sync: false
