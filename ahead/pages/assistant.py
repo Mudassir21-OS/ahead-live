@@ -96,16 +96,6 @@ def _trait_icon(paths: str) -> str:
 
 # Offline answers for the suggested prompts so the page is useful without an API key.
 LOCAL_ANSWERS = {
-    "reminder": (
-        "Medicine reminders go in your own phone or computer calendar, so they ring at each dose time even when "
-        "AHEAD is closed:\n\n"
-        "1. Open **My plan** and choose **Add reminders to my calendar** (or **Settings → Preferences → Reminders "
-        "in my calendar**).\n"
-        "2. Choose **Make my private calendar link**, then **Subscribe on this device**. For Google Calendar, paste "
-        "the link under Other calendars → + → From URL.\n\n"
-        "The reminders follow your doctor's changes by themselves. Doses only appear once a doctor has added a "
-        "medication plan for you."
-    ),
     "what is ahead": (
         "**AHEAD** (Advanced Health Early Awareness and Disease Detection) is a Senior Design prototype that "
         "screens for **diabetes**, **cardiovascular disease** and **chronic kidney disease** using machine-learning "
@@ -180,6 +170,132 @@ def _local_answer(prompt: str, is_doctor: bool = False) -> str | None:
     pairs = [*DOCTOR_LOCAL_ANSWERS.items(), *LOCAL_ANSWERS.items()] if is_doctor else LOCAL_ANSWERS.items()
     for key, answer in pairs:
         if key in text:
+            return answer
+    return None
+
+
+# ----------------------------------------------------------------------------- how-to answers
+# Questions about using AHEAD's own pages are answered here, instantly and with the real button names, instead of
+# by Gemini (which can only guess at the screens). A question needs a how-to cue ("how", "where", "can I", ...) and
+# a topic; the first matching topic wins, so the more specific ones come first. (pattern, answer, who): who is
+# "patient", "doctor" or "both".
+HOW_CUE = re.compile(r"\b(how|where|can i|can you|could i|help|steps?|want to|way to|need to|i'?d like to|is there|"
+                     r"what do i do|where do i|show me how)\b")
+_PASSWORD_FORGOT = (
+    "On the **sign-in page**, open **Forgot your password?**, type your account email and choose **Email me a reset "
+    "link**. The link arrives in a minute or two (check Junk or Spam) and works once.")
+_PASSWORD_CHANGE = (
+    "Open **Settings → Account → Change password**, type your current password and the new one twice, then choose "
+    "**Update password**. Your other browsers are signed out; this one stays signed in.")
+_EMAIL_CHANGE = (
+    "Open **Settings → Profile → Account information**, type the new email and your **current password**, then "
+    "**Save changes**. AHEAD emails a confirmation link to the new address; your email only changes once you open it, "
+    "and the old address is told.")
+_DARK_MODE = "Open **Settings → Appearance → Display mode** and choose the light or dark interface."
+_SESSIONS = ("Open **Settings → Account → Manage sessions** and choose **Sign out on all my devices**. Changing your "
+             "password also signs your other browsers out.")
+HOW_TOS = [
+    # ---- both
+    (r"\b(forgot|forgotten|reset|lost|recover)\b.*\bpassword", _PASSWORD_FORGOT, "both"),
+    (r"\b(change|update|new)\b.*\bpassword", _PASSWORD_CHANGE, "both"),
+    (r"\b(change|update)\b.*\bemail\b(?! ?(notif|settings|prefer))(?!s)", _EMAIL_CHANGE, "both"),
+    (r"\b(dark|light)\s*(mode|theme)\b|\btheme\b|\bdisplay mode\b", _DARK_MODE, "both"),
+    (r"\b(sign|log)\s*out\b.*\b(all|every|other)\b|\bsessions?\b", _SESSIONS, "both"),
+    # ---- patients
+    (r"\b(remove|unlink|revoke|stop sharing|take away)\b.*\bdoctors?\b",
+     "Open **Settings → Preferences → Care team access** and choose **Remove access** next to the doctor. They stop "
+     "seeing your results at once, and plans that doctor wrote for you stop.", "patient"),
+    (r"\b(gemini|ai)\b.*\b(summar|doctor)|\bdoctor\b.*\b(ai|gemini)\b",
+     "Doctors can draft an optional AI summary of your records only if you allow it. Under **Settings → Preferences → "
+     "Care team access**, tick or untick **Allow sending my linked records to Gemini for optional AI summaries** for "
+     "each doctor. It is off until you turn it on.", "patient"),
+    (r"\b(link|add|connect|share|invite)\b.*\bdoctors?\b|\bdoctors?\b.*\b(see|access|view)\b",
+     "1. Ask your doctor for the email of their AHEAD doctor account.\n"
+     "2. Open **Settings → Preferences → Care team access**, type it under **Doctor account email** and choose "
+     "**Add doctor** (or tap **Share with your doctor** under a screening result).\n\n"
+     "You can add several doctors and remove any of them at any time. They then see your saved results and can "
+     "add medication and prevention plans.", "patient"),
+    (r"\b(delete|clear|erase|remove|wipe)\b.*\b(history|results?|screenings?|data)\b",
+     "Open **Settings → Preferences → Data & privacy** and choose **Delete my saved screening history**. This "
+     "permanently deletes every saved screening, including what your doctors could see. To stop saving new "
+     "results, switch off **Keep screening history** just above it.", "patient"),
+    (r"\b(withdraw|take back|revoke|cancel)\b.*\b(consent|agreement)\b|\bconsent\b",
+     "Open **Settings → Preferences → Data & privacy** and choose **Withdraw**. AHEAD then asks you to agree again "
+     "before you can use it, and doctors' AI summaries are switched off. What is already saved stays until you delete "
+     "it or the account is erased.", "patient"),
+    (r"\b(pdf|download|export|print)\b",
+     "Run a screening (**Screenings → Begin screening**). Under the result, choose **Download screening PDF**. It "
+     "explains the score, the factors AHEAD noticed and what to ask your doctor.", "patient"),
+    (r"\b(reminders?|remind|calendar|alarm)\b",
+     "Medicine reminders go in your own phone or computer calendar, so they ring at each dose time even when "
+     "AHEAD is closed:\n\n"
+     "1. Open **My plan** and choose **Add reminders to my calendar** (or **Settings → Preferences → Reminders "
+     "in my calendar**).\n"
+     "2. Choose **Make my private calendar link**, then **Subscribe on this device**. For Google Calendar, paste "
+     "the link under Other calendars → + → From URL.\n\n"
+     "The reminders follow your doctor's changes by themselves. Doses only appear once a doctor has added a "
+     "medication plan for you.", "patient"),
+    (r"\b(add|enter|record|mark|log|track)\b.*\b(medicines?|medications?|meds|doses?|pills?|tablets?)\b|\bmark\b.*\btaken\b",
+     "Medicines are added by your doctor, not by you, so AHEAD always matches what was prescribed. Once a linked "
+     "doctor adds a plan, open **My plan** to see today's doses and mark each one **taken**. To link a doctor: "
+     "**Settings → Preferences → Care team access → Add doctor**.", "patient"),
+    (r"\b(stop|turn off|unsubscribe|fewer|less|choose|change|which)\b.*\bemails\b|\bweekly summary\b",
+     "Open **Settings → Preferences → Emails** and switch each optional email on or off (plan changes, the weekly "
+     "summary). Sign-up, password and security emails are always sent. Emails never contain results or medicine "
+     "names.", "patient"),
+    (r"\b(food|meal|meals|calories|nutrition|eat)\b",
+     "Open the **Food Nutrition Analyzer**, use **Upload or take a food photo** and choose **Analyze Food**. Check "
+     "the foods, portion and nutrient estimates, correct them if needed, then **Confirm and save meal**. Your day's totals and meal history appear "
+     "below. The photo is sent to Gemini for the estimate.", "patient"),
+    (r"\b(lifestyle|wellness|check-?in|goals?|challenge|30\s*[x×]\s*30)\b",
+     "Open the **Health & Lifestyle Tracker**. **Check-in** records sleep, water, food habits, stress and time spent "
+     "sitting (**Save lifestyle check-in**); **Progress** shows your trend; **Goals** sets your own targets; the "
+     "**30×30 Challenge** tab logs each day's active minutes over 30 days.", "patient"),
+    (r"\b(start|do|take|run|begin|get)\b.*\b(screening|test|assessment|check)\b|\bscreen(ing)? (for|my)\b",
+     "Open **Screenings**, pick diabetes, cardiovascular or kidney health and choose **Begin screening**. Answer the "
+     "questions (lab values are optional) and choose **Generate Screening Result**. The result is an educational "
+     "estimate, not a diagnosis; you can download it as a PDF and share it with a linked doctor.", "patient"),
+    (r"\bnotifications?\b",
+     "Open **Notifications** for plan changes, reminders to screen again and messages from your doctors. **Show "
+     "unread only** hides the ones you've seen. Notifications are deleted after 90 days.", "patient"),
+    # ---- doctors
+    (r"\b(upload|import)\b|\bcsv\b|\bexcel\b",
+     "1. Open the **Clinical Dashboard** and choose the condition and model.\n"
+     "2. Download the example upload template if needed, then **Upload patient records** (CSV or Excel, "
+     "de-identified) and choose **Save records to review queue**.\n"
+     "3. Under **Review and score**, score the ready records, open each one to check it, and save your **Review "
+     "decision**. **Download patient PDF** gives a one-page summary.", "doctor"),
+    (r"\b(prescribe|medication plan|medicine plan|assign)\b|\b(add|create|change|stop)\b.*\b(medicines?|medications?|meds|doses?)\b",
+     "Open **Advanced Analytics & Patient Intelligence**, choose the patient, then the **Medication Monitoring** tab. "
+     "Fill in the plan and choose **Save medication plan**. The patient is notified (by email without the medicine "
+     "name, if they allow emails), and you can pause or stop the plan there later.", "doctor"),
+    (r"\bprevention\b",
+     "Open **Advanced Analytics & Patient Intelligence**, choose the patient and the **Prevention Plan** tab. Start "
+     "from AHEAD's standard advice for the condition, adjust the targets, then **Approve and send** (or **Save "
+     "draft**). The model never chooses the targets.", "doctor"),
+    (r"\b(ai|gemini)\b.*\bsummar|\bsummar\w*\b",
+     "Open **Advanced Analytics & Patient Intelligence**, choose the patient and the **Clinical Insights** tab. The "
+     "record summary there uses no AI. The optional Gemini summary appears only if the patient allowed it in their "
+     "Settings and their consent is current.", "doctor"),
+    (r"\b(only|fewer|less|which|stop)\b.*\b(notifications?|results|alerts|emails)\b",
+     "Open **Settings → Preferences → Emails**. Under **Tell me about**, choose every new result (the default) or "
+     "only results that need attention; switch the optional emails on or off there too.", "doctor"),
+    (r"\b(link|add|connect|find|see|view|open)\b.*\bpatients?\b|\bpatients?\b.*\b(link|add|connect)\b|\bmy patients\b",
+     "Patients link themselves: they enter your doctor account email under **Settings → Preferences → Care team "
+     "access → Add doctor**. Linked patients then appear in **Advanced Analytics & Patient Intelligence**, where you "
+     "choose one to see their records, plans and history.", "doctor"),
+]
+_HOW_TOS = [(re.compile(pattern), answer, who) for pattern, answer, who in HOW_TOS]
+
+
+def how_to_answer(prompt: str, is_doctor: bool = False) -> str | None:
+    """Steps for using AHEAD's own pages ("how do I link my doctor"), or None for anything else."""
+    text = prompt.lower()
+    if not HOW_CUE.search(text):
+        return None
+    role = "doctor" if is_doctor else "patient"
+    for pattern, answer, who in _HOW_TOS:
+        if who in (role, "both") and pattern.search(text):
             return answer
     return None
 
@@ -452,7 +568,8 @@ def render_assistant() -> None:
         with st.chat_message("user"):
             st.markdown(prompt)
         with st.chat_message("assistant", avatar=robot):
-            answer = None if user["is_doctor"] else _status_answer(prompt, st.session_state.user["id"])
+            answer = (None if user["is_doctor"] else _status_answer(prompt, st.session_state.user["id"])) \
+                or how_to_answer(prompt, user["is_doctor"])
             local = bool(answer)
             if local:
                 st.session_state.chat_messages[-1]["local"] = True   # this question and its answer stay out of Gemini

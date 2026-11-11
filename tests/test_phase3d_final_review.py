@@ -240,12 +240,75 @@ class AssistantRoutingTests(Base):
             self.assertFalse(_asks_for_doses(question), question)
 
     def test_reminder_how_to_gets_a_real_answer(self):
-        from ahead.pages.assistant import _local_answer, _status_answer
+        from ahead.pages.assistant import _status_answer, how_to_answer
         question = "how do i set up reminders for medicines"
         self.assertIsNone(_status_answer(question, self.p["id"]))
-        self.assertIn("Add reminders to my calendar", _local_answer(question))
+        self.assertIn("Add reminders to my calendar", how_to_answer(question))
 
     def test_how_to_improve_lifestyle_is_not_answered_with_the_score(self):
         from ahead.pages.assistant import _status_answer
         self.assertIsNone(_status_answer("how do i improve my lifestyle score", self.p["id"]))
         self.assertIsNotNone(_status_answer("what is my lifestyle score", self.p["id"]))
+
+
+class HowToTests(Base):
+    """Questions about AHEAD's own pages get built-in steps; health questions still go to Gemini."""
+
+    PATIENT = {
+        "how do i set up reminders for medicines": "Add reminders to my calendar",
+        "how do i link my doctor": "Add doctor",
+        "how can i remove my doctor": "Remove access",
+        "how do i download a pdf of my result": "Download screening PDF",
+        "how do i delete my history": "Delete my saved screening history",
+        "i forgot my password, what do i do": "Forgot your password?",
+        "how do i change my password": "Update password",
+        "how do i change my email": "current password",
+        "how do i stop the weekly emails": "Settings → Preferences → Emails",
+        "how do i turn on dark mode": "Display mode",
+        "how do i add my medicine": "added by your doctor",
+        "how do i use the food analyzer": "Analyze Food",
+        "how do i start a screening": "Begin screening",
+        "how do i withdraw consent": "Withdraw",
+    }
+    DOCTOR = {
+        "how do i upload records": "Save records to review queue",
+        "how do i prescribe a medicine": "Save medication plan",
+        "how do patients link to me": "Care team",
+        "how do i get only urgent notifications": "Tell me about",
+        "how do i make a prevention plan": "Prevention Plan",
+    }
+
+    def test_patient_how_tos(self):
+        from ahead.pages.assistant import how_to_answer
+        for question, expected in self.PATIENT.items():
+            self.assertIn(expected, how_to_answer(question) or "", question)
+
+    def test_doctor_how_tos(self):
+        from ahead.pages.assistant import how_to_answer
+        for question, expected in self.DOCTOR.items():
+            self.assertIn(expected, how_to_answer(question, is_doctor=True) or "", question)
+
+    def test_health_questions_still_go_to_gemini(self):
+        from ahead.pages.assistant import how_to_answer
+        for question in ("is metformin safe with coffee", "what is hba1c", "how does diabetes affect the kidneys",
+                         "how can i lower my blood sugar", "what foods are good for my heart"):
+            self.assertIsNone(how_to_answer(question), question)
+
+    def test_each_role_gets_only_its_own_steps(self):
+        from ahead.pages.assistant import how_to_answer
+        self.assertNotIn("Add doctor", how_to_answer("how do i link my doctor", is_doctor=True) or "")
+        self.assertNotIn("Clinical Dashboard", how_to_answer("how do i upload records") or "")
+
+    def test_every_named_button_exists_in_the_pages(self):
+        """The steps quote real labels: each **bold** button name must appear in the page code."""
+        import glob
+        import re
+        from ahead.pages.assistant import HOW_TOS
+        code = "".join(open(f, encoding="utf-8").read() for f in glob.glob("ahead/**/*.py", recursive=True)
+                       if not f.endswith("assistant.py"))
+        for _pattern, answer, _who in HOW_TOS:
+            for name in re.findall(r"\*\*([^*]+)\*\*", answer):
+                for part in (p.strip() for p in name.split("→")):
+                    if part in ("taken", "Approve and send"):   # "Mark taken"; "Approve and send to <name>"
+                        continue
+                    self.assertIn(part, code, f"{part!r} in: {answer[:50]}")
