@@ -927,7 +927,7 @@ def render_predictor(disease: str) -> bool:
         # Screenings here are not attached to a record, so the card speaks about the entered values.
         result_card(prediction, probability, disease_label, model_name, threshold,
                     audience="doctor" if doctor else "patient", subject="The entered values", disease=disease,
-                    track=track)
+                    track=track, values=values)
     with right:
         from ahead.visuals import score_ring
         overridden = model_overridden(track)   # the track panel below, not the model's flag, is the result then

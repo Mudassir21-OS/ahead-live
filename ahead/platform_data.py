@@ -125,7 +125,9 @@ def ai_consent(patient_id, doctor_id, enabled=None):
         if enabled is not None:
             db.execute('UPDATE care_access SET ai_allowed=? WHERE patient_id=? AND doctor_id=?',(int(bool(enabled)),patient_id,doctor_id))
         row=db.execute('SELECT ai_allowed FROM care_access WHERE patient_id=? AND doctor_id=?',(patient_id,doctor_id)).fetchone()
-        return bool(row and row['ai_allowed'])
+    # Only while the patient's agreement is current (it covers sending data to Gemini).
+    from ahead.consent import has_consent
+    return bool(row and row['ai_allowed']) and has_consent(patient_id)
 
 
 def allowed(doctor_id, patient_id):

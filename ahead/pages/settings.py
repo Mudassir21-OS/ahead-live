@@ -156,9 +156,6 @@ def _save_profile(user, full_name, new_email, institution, changing):
     confirm_first = changing and mailer.enabled()
     if confirm_first:
         outcome = accounts.request_email_change(me, new_email, request_ip())
-        if outcome == "taken":
-            st.error("Unable to save this profile. The email may already be used.")
-            return
         if outcome == "limit":
             st.error("Too many email changes lately. Try again in an hour.")
             return
@@ -281,11 +278,11 @@ def _preferences_tab(care_first: bool = False) -> None:
     history = st.session_state.get("screening_history", [])
     c1, c2 = st.columns([0.3, 0.7])
     with c1:
-        if st.button(f"Clear session history ({len(history)})", disabled=not history, width="stretch"):
+        if st.button(f"Delete my saved screening history ({len(history)})", disabled=not history, width="stretch"):
             st.session_state.screening_history = []
             st.session_state.last_results = {}
             delete_screenings(st.session_state.user["id"])
-            st.toast("Screening history cleared.")
+            st.toast("Your saved screening history was deleted.")
             st.rerun()
 
     if user := st.session_state.get("user"):

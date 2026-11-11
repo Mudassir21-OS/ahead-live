@@ -6,7 +6,7 @@
 > score describes who in the data had an outcome, not what a change would do for one person, so a plan chosen to
 > lower it is not evidence that it lowers anyone's risk. The current models make this plainer still. The diabetes
 > and kidney models take no lab values, so a doctor's lab target cannot even be expressed as a model change; in the
-> diabetes model, smoking barely moves the score; in the kidney model (gradient boosting), adding 5 to BMI lowers
+> diabetes model, smoking barely moves the score; in the kidney model tested then (gradient boosting; the app now uses logistic regression), adding 5 to BMI lowers
 > the score for 21% of test rows; and the heart model's label is a past heart attack. So AHEAD still sorts each
 > result into a track and lets a doctor approve standard prevention advice instead of letting the model choose a plan.
 

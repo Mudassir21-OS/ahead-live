@@ -30,6 +30,7 @@ roll-back to a version without encryption.
 """
 
 import base64
+from datetime import datetime, timezone
 import binascii
 import hashlib
 import logging
@@ -208,17 +209,44 @@ def stored_key_ids():
     return found
 
 
+KEY_IDS_STATE = "field_key_ids"   # app_state: the key ids AHEAD has encrypted with (comma-separated)
+
+
+def _known_key_ids(conn):
+    """The key ids recorded as used for encryption, or None on a database from before they were recorded."""
+    row = conn.execute("SELECT value FROM app_state WHERE name=?", (KEY_IDS_STATE,)).fetchone()
+    return None if row is None else {k for k in row["value"].split(",") if k}
+
+
 def check():
-    """Run at start-up: stop with FieldKeyError when AHEAD can't read what is stored. Returns the stored key ids."""
+    """Run at start-up: stop with FieldKeyError when AHEAD can't read what is stored. Returns the stored key ids.
+
+    Only key ids AHEAD itself has used count (recorded in app_state). Text someone typed to look encrypted
+    ("enc1:deadbeef:..." as a name, saved while no key is set) carries a key id AHEAD never used, so it is shown as
+    typed instead of stopping the site from starting. A database from before the ids were recorded trusts what is
+    stored once, then records it."""
+    from ahead import db as database
     have = {kid for kid, _ in keys()}   # also raises for a malformed key
     stored = stored_key_ids()
-    missing = stored - have
+    with database.connection(decrypt=False) as conn:
+        known = _known_key_ids(conn)
+    if known is None:
+        known = stored
+    missing = (stored & known) - have
     if missing:
         if not have:
             raise FieldKeyError(f"The database holds encrypted health values but {ENV} is not set. Add the key in "
                                 "Render → Environment (the one saved in your password manager).")
         raise FieldKeyError(f"The database holds values encrypted with key {', '.join(sorted(missing))}, which is "
                             f"not in {ENV} (it has {', '.join(sorted(have))}). Put the old key back, after a comma.")
+    ignored = stored - known - have
+    if ignored:
+        log.warning("ignored %d stored key id(s) AHEAD never used (text typed to look encrypted)", len(ignored))
+    record = (known & stored) | ({current_key_id()} if have else set())
+    now = datetime.now(timezone.utc).isoformat()
+    with database.connection(decrypt=False) as conn:
+        conn.execute("INSERT INTO app_state(name,value,updated_at) VALUES(?,?,?) ON CONFLICT(name) DO UPDATE "
+                     "SET value=excluded.value,updated_at=excluded.updated_at", (KEY_IDS_STATE, ",".join(sorted(record)), now))
     return stored
 
 

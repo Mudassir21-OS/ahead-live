@@ -258,13 +258,14 @@ def model_overridden(track: dict | None) -> str:
 
 def result_card(prediction: int, probability: float, disease_label: str, model_name: str, threshold: float,
                 audience: str = "patient", subject: str = "This record's values", status: str = "",
-                disease: str = "", track: dict | None = None) -> None:
+                disease: str = "", track: dict | None = None, values: dict | None = None) -> None:
     """The screening result box. audience="doctor" describes *subject* (the record, or values entered on
     Screenings) and the patient in the third person, titled Flagged / Not flagged like the rest of the doctor UI;
     a record's *status* (e.g. Reviewed) replaces that word so the card agrees with the record label and queue.
     *disease* (the condition key) gives the heart card its own words and says what its score means. *track* (the
     result's triage()): when a measured lab value or a past heart event set it, the card is titled as the model's
-    estimate, so its flag never reads as the result over a track panel that says otherwise."""
+    estimate, so its flag never reads as the result over a track panel that says otherwise. *values* (the answers)
+    add a note under the card for an age group where the model's flag says little (triage.age_note)."""
     elevated = prediction == 1
     css = "result-elevated" if elevated else "result-lower"
     title = "Elevated Risk Pattern" if elevated else "Lower Predicted Risk"
@@ -308,6 +309,10 @@ def result_card(prediction: int, probability: float, disease_label: str, model_n
 </div>
 """
     )
+    from ahead.triage import age_note
+    note = age_note(disease, values, audience) if disease else ""
+    if note:
+        st.info(note)
 
 
 # =============================================================================

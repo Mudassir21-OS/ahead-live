@@ -110,6 +110,8 @@ def patient_report(disease, patient_id, values, score, threshold, model, metrics
         recall=_metric(metrics, "recall_disease"), precision=_metric(metrics, "precision_disease"),
         source_set=_text(metric_source) or "test", scope=_text(metric_scope).lstrip(", "), caveat=_text(metric_caveat),
         gap=GAP, rows=2.6, band="full")
+    from ahead.triage import age_note
+    r.age_note = _text(age_note(disease, values, audience))
     r.flagged, r.lowered = r.score >= threshold, usual is not None and threshold < usual - 1e-9
     r.track = _track(track, disease, r.flagged, audience)
     r.shown_score, r.shown_threshold = _pct(r.score), _pct(threshold)
@@ -845,6 +847,11 @@ def _urgent(r):
 
 
 def _reading(r):
+    items = _reading_items(r)
+    return items + [("Your age group." if r.patient else "Age group.", r.age_note)] if getattr(r, "age_note", "") else items
+
+
+def _reading_items(r):
     if r.patient:
         # Under a "See a doctor soon" band, regular check-ups would read as leave to wait for a routine visit.
         check_ups = "" if _urgent(r) else " Keep up your regular check-ups."

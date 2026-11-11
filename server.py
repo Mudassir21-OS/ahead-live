@@ -135,7 +135,7 @@ async def weekly_task(request):
     key = os.environ.get("AHEAD_TASK_KEY", "").strip()
     if len(key) < 24:
         return JSONResponse({"error": "not found"}, status_code=404)
-    if not hmac.compare_digest(request.headers.get("x-ahead-task-key", ""), key):
+    if not hmac.compare_digest(request.headers.get("x-ahead-task-key", "").encode("utf-8", "replace"), key.encode()):
         return JSONResponse({"error": "forbidden"}, status_code=403)
     result = await run_in_threadpool(alerts.weekly_summaries)
     result["maintenance"] = await run_in_threadpool(_maintenance, True)

@@ -344,7 +344,7 @@ class SignUpTests(Base):
         self.register()
         at = self.sign_in(self.app().run(), "new@test.com")
         next(b for b in at.button if b.label == "Email me a new confirmation link").click().run()
-        self.assertTrue(any("Sent to new@test.com" in s.value for s in at.success))
+        self.assertTrue(any("Sent to new@test.com" in s.value.replace("\\", "") for s in at.success))
         self.assertEqual(len(self.mails("verify")), 2)
 
     def test_existing_accounts_count_as_confirmed(self):

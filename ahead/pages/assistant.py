@@ -12,7 +12,7 @@ from urllib.parse import quote
 import streamlit as st
 
 from ahead.browser import read_aloud
-from ahead.components import current_user, go_to, pref
+from ahead.components import markdown_literal, current_user, go_to, pref
 from ahead.config import ICONS_DIR, NAV_ITEMS
 from ahead.platform_data import local_now
 from ahead.resources import chat_reply, chat_stream, gemini_available, gemini_error_message, icon_uri, static_url, transcribe_audio
@@ -236,7 +236,8 @@ def _status_answer(text: str, user_id: int) -> str | None:
         doses = scheduled_doses(user_id, local_today(), local_today())
         if not doses:
             return "You have no medication doses scheduled today."
-        lines = [f"- {d['time']} · {d['name']} {d['dosage']} — {d['status']}" for d in sorted(doses, key=lambda d: d["time"])]
+        # The doctor typed the name and dose: shown as text, never as links or formatting.
+        lines = [f"- {d['time']} · {markdown_literal(d['name'])} {markdown_literal(d['dosage'] or '')} — {d['status']}" for d in sorted(doses, key=lambda d: d["time"])]
         return "Here are today's doses:\n\n" + "\n".join(lines) + "\n\nYou can record them on **My plan**."
     return None
 

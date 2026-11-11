@@ -787,3 +787,50 @@ def entered_later(rows) -> dict:
         found[row["id"]] = set(mine)
         mine |= entered_features(row["values_json"], row["disease"])
     return found
+
+
+# =============================================================================
+# AGE GROUPS WHERE THE MODEL SAYS LITTLE
+# =============================================================================
+# One classification threshold serves every age. On the held-out test sets (docs/evaluation, scripts/
+# evaluate_models.py) that leaves three age groups where the model's flag carries little information, so the
+# result says so instead of letting the flag speak for itself: (lowest age, highest age, patient text, doctor text).
+AGE_LIMITS = {
+    "diabetes": [(60, None,
+                  "For people aged 60 and over, this screening flags almost everyone, so a flag here says little "
+                  "beyond your age. An HbA1c blood test is the way to check for diabetes or prediabetes.",
+                  "Age 60+: in testing the model flagged 99% of this group (specificity 2%, AUC 0.61), so the flag "
+                  "adds little beyond age. An HbA1c measurement is the informative test.")],
+    "kidney": [(18, 39,
+                "For people under 40, this screening's model almost never flags anyone, even people with kidney "
+                "problems, so a lower result is not reassurance. Only blood and urine tests (eGFR and ACR) can show "
+                "a kidney problem.",
+                "Age 18–39: in testing the model flagged 0.1% of this group and found none of its cases (AUC 0.56). "
+                "A not-flagged result is uninformative here; rely on eGFR and ACR.")],
+    "heart": [(18, 39,
+               "For people under 40, this screening rarely flags anyone: in testing it found about 6 in 100 of the "
+               "people in this age group who had had a heart attack. A lower result is not reassurance.",
+               "Age 18–39: in testing the model flagged 0.4% of this group (sensitivity 6%). A not-flagged result "
+               "is weak evidence here.")],
+}
+
+
+def _age_years(disease: str, values) -> float | None:
+    """The age a screening's answers give, in years (heart's "Age 40 to 44" category counts as 40)."""
+    from ahead.config import AGE_FIELD
+    raw = (values or {}).get(AGE_FIELD.get(disease, ""))
+    if isinstance(raw, str):
+        digits = "".join(ch if ch.isdigit() else " " for ch in raw).split()
+        return float(digits[0]) if digits else None
+    return entered(raw)
+
+
+def age_note(disease: str, values, audience: str = "patient") -> str:
+    """A sentence for results in an age group where the model's flag says little (AGE_LIMITS), else ""."""
+    age = _age_years(disease, values)
+    if age is None:
+        return ""
+    for low, high, patient, doctor in AGE_LIMITS.get(disease, ()):
+        if age >= low and (high is None or age <= high):
+            return doctor if audience == "doctor" else patient
+    return ""

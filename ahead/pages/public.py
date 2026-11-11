@@ -11,7 +11,7 @@ import os
 import streamlit as st
 
 from ahead import accounts, consent, mailer
-from ahead.components import username_hint
+from ahead.components import markdown_literal, username_hint
 from ahead.config import BASE, ROLE_ADMIN, ROLE_DOCTOR, ROLE_PATIENT
 from ahead.resources import icon_uri, image_data_uri, static_url
 from ahead.session import begin, request_ip
@@ -113,12 +113,13 @@ def _register(name: str, email: str, password: str, confirm: str, agreed: bool =
     ip = request_ip()
     if not accounts.sign_up_allowed(ip):
         return False, "Too many new accounts from this network. Try again in an hour."
-    if _reserved(email):
-        return False, "This email address is reserved."
     accounts.record_sign_up(ip)
     confirm_by_email = mailer.enabled()
     created_text = (f"Account created. We've emailed a confirmation link to {email}. Open it, then sign in. "
                     "It can take a minute, and it may land in Junk or Spam.")
+    if _reserved(email):
+        # The server-set staff addresses answer like any registered one, so the page doesn't reveal them.
+        return (True, created_text) if confirm_by_email else (False, "That email is already registered.")
     if not create_user(email, password, ROLE_PATIENT, name.strip()[:120], verified=not confirm_by_email):
         if confirm_by_email:
             # Same reply as a new account, so sign-up can't be used to find out who has one; the owner hears instead.
@@ -217,7 +218,7 @@ def render_login() -> None:
                 if pending:
                     if st.button("Email me a new confirmation link", key="resend_verification", width="stretch"):
                         if accounts.send_verification(pending["id"], request_ip()):
-                            st.success(f"Sent to {pending['email']}. It can take a minute; check Junk or Spam too.")
+                            st.success(f"Sent to {markdown_literal(pending['email'])}. It can take a minute; check Junk or Spam too.")
                         else:
                             st.warning("We couldn't send another link just now. Wait an hour and try again.")
 

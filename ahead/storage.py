@@ -7,6 +7,7 @@ import logging
 import os
 import re
 import secrets
+import threading
 from datetime import datetime, timezone
 
 from ahead import db as database
@@ -23,16 +24,26 @@ def _db_path():
     return database.sqlite_path()
 
 
+# Each hash takes about a second on Render's 0.1 CPU. At most two run at once, so a burst of sign-in attempts
+# queues up instead of starving every other page of CPU.
+_HASHING = threading.BoundedSemaphore(2)
+
+
+def _pbkdf2(password, salt):
+    with _HASHING:
+        return hashlib.pbkdf2_hmac("sha256", password.encode(), salt, 600_000)
+
+
 def password_hash(password):
     salt = secrets.token_bytes(16)
-    digest = hashlib.pbkdf2_hmac("sha256", password.encode(), salt, 600_000)
+    digest = _pbkdf2(password, salt)
     return f"{salt.hex()}:{digest.hex()}"
 
 
 def verify_password(password, encoded):
     try:
         salt, digest = encoded.split(":", 1)
-        actual = hashlib.pbkdf2_hmac("sha256", password.encode(), bytes.fromhex(salt), 600_000)
+        actual = _pbkdf2(password, bytes.fromhex(salt))
         return hmac.compare_digest(actual, bytes.fromhex(digest))
     except (ValueError, AttributeError):
         return False
@@ -140,6 +151,8 @@ def create_user(email, password, role, name, institution="", demo=False, created
     email = email.strip().lower()
     with connection() as db:
         if db.execute("SELECT 1 FROM users WHERE email=?", (email,)).fetchone():
+            # Same work as a new account, so the time taken doesn't show that the address is registered.
+            password_hash(password)
             return False
     try:
         with connection() as db:
@@ -211,6 +224,9 @@ def change_password(user_id, current, new):
             return False
         # A new password signs every other browser out (their sessions carry the old token_version).
         db.execute("UPDATE users SET password_hash=?,token_version=token_version+1 WHERE id=?", (password_hash(new), user_id))
+        # Pending email changes and reset links were asked for under the old password: they stop working too.
+        db.execute("UPDATE account_tokens SET used_at=? WHERE user_id=? AND used_at IS NULL AND purpose IN ('email_change','reset')",
+                   (datetime.now(timezone.utc).isoformat(), user_id))
     return True
 
 
@@ -290,5 +306,9 @@ def load_screenings(owner_id):
 
 
 def delete_screenings(owner_id):
+    """Delete every saved screening of this account, and the doctors' notices about them (they name the patient
+    and the result)."""
     with connection() as db:
+        db.execute("DELETE FROM notifications WHERE dedupe_key IN "
+                   "(SELECT 'review-' || CAST(id AS TEXT) FROM screenings WHERE owner_id=?)", (owner_id,))
         db.execute("DELETE FROM screenings WHERE owner_id=?", (owner_id,))

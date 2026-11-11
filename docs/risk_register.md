@@ -1,4 +1,4 @@
-# AHEAD risk register (Phase 3c, November 2026)
+# AHEAD risk register (Phase 3c, updated after the final review, November 2026)
 
 What could go wrong with AHEAD as it runs today (test data only, Render free + Neon Frankfurt), how likely and how
 bad it is, and what has been done about it. Built from an independent review of the whole codebase in Phase 3c
@@ -28,6 +28,24 @@ sharply with real patients; the last column says what has to change first.
 | F14 | The admin Emails list showed which patient got "Plan changed" or which doctor got "Result to review" | Medium / Low | Those show only as "Care notice" |
 | F15 | `decrypt-all` could stop early and still report success | Low / Medium | Walks each table once in order, then checks nothing encrypted is left and fails loudly if something is |
 
+## 1b. Fixed after the final pre-submission review (Phase 3d)
+
+A second independent reviewer read the whole codebase cold before submission. No critical issues; these were fixed:
+
+| # | Finding | Fix |
+|---|---|---|
+| F21 | A pending email change survived a password reset, so someone who once knew the password could still move the account to their inbox | Resetting or changing the password, and "sign out everywhere", cancel pending email changes and reset links |
+| F22 | Account existence could still be learned: Settings answered "email taken" without a limit, sign-up was faster for registered emails, and the staff addresses answered "reserved" | Settings answers "sent" for every address (rate-limited first, nothing sent to a taken one); same hashing work either way; staff addresses get the normal reply |
+| F23 | Doctor AI summaries could still send a patient's data to Gemini after the patient withdrew consent | AI summaries need a current agreement; withdrawing switches them off for every doctor |
+| F24 | A value typed to look encrypted could stop the site from starting | Start-up only trusts key ids AHEAD itself recorded using (app_state); look-alikes are shown as typed |
+| F25 | One threshold for all ages: diabetes flags ~99% of people 60+, kidney and heart rarely flag people under 40, and the results didn't say so | A note on the result card and PDF for those age groups (patient and doctor wording); doctor notice no longer says "nothing urgent" |
+| F26 | Erasure and "clear history" left doctors' notices naming the patient and the result; a doctor's own screenings survived erasure; on SQLite the erasure audit row could point at a new account with a reused id | Those notices are deleted; screenings and activity deleted for every role; the erasure row keeps no account id; button renamed "Delete my saved screening history" |
+| F27 | A doctor-typed medicine name could become a link in the patient's assistant | Shown as plain text |
+| F28 | "Time to screen again" notices were kept forever after their plan stopped | Kept while the plan runs, then the 90-day rule |
+| F29 | Consent text didn't say Gemini's free tier lets Google use and read inputs | Consent text version 2026-11b says so (every patient is asked again once) |
+| F30 | Many sign-in attempts at once could use all of Render's 0.1 CPU | At most two password hashes run at once |
+| F31 | Smaller items: non-ASCII task-key header gave a 500; `_`/`%` in emails treated as wildcards in erasure; stale README/doc lines | Fixed |
+
 ## 2. Open risks (accepted for the prototype, or for the IT handover)
 
 | # | Risk | Likelihood / impact | Mitigation now | Before real patients |
@@ -51,7 +69,10 @@ sharply with real patients; the last column says what has to change first.
 | R17 | **Not checked on real devices**: Safari/iOS with the CSP, real phone tab-close sign-out, calendar subscribe on iPhone/Android | Medium / Medium | Chrome headless (desktop and phone sizes) passes every page with no CSP errors | Test on real devices before the demo |
 | R18 | **Emails from a Gmail sender may land in Junk** | High / Low | Users told to check Junk | AURAK sending domain with SPF/DKIM |
 | R19 | **"Duplicate tab" copies the sign-in** (how browsers work) | Medium / Low | 2 h idle and 12 h maximum; sign out everywhere in Settings | None needed beyond user guidance |
-| R20 | **Withdrawing consent doesn't remove doctors' access by itself** | Medium / Low | Patients remove doctors in Settings; consent text says so | Ask on withdrawal whether to remove doctors too |
+| R20 | **Withdrawing consent doesn't remove doctors' access by itself** (AI summaries do stop, F23) | Medium / Low | Patients remove doctors in Settings; consent text says so | Ask on withdrawal whether to remove doctors too |
+| R21 | **Age-band thresholds not built**: the model still uses one threshold for every age (F25 only explains it) | High / Medium | Notes on results and PDF; numbers in the evaluation doc | Per-age-band thresholds picked on the validation set (no model change) |
+| R22 | **Gemini answers are shown as Markdown**, so a prompt-injected link could appear in an AI answer | Low / Low | Prompts tell Gemini to ignore instructions in data; test data only | Strip links from AI output |
+| R23 | **With emails off, Settings and sign-up still say an address is taken** (no other way to tell the user) | Low / Low | Emails are on in the live site | None needed while emails are on |
 
 ## 3. Checked and found sound by the review
 

@@ -342,7 +342,7 @@ The live site runs on **Render** (web service, free plan, Frankfurt) with **Neon
    `python scripts/create_account.py --email … --name … --role Admin`. Sign in with **Doctor / Admin** selected.
 5. Migrations run on every start. Before a deploy that adds a migration, create a Neon backup branch.
 
-Health check: `GET /healthz` returns `{"status": "ok", "database": "ok"}`.
+Health check: `GET /healthz` returns `{"status": "ok", "database": "ok", "backend": "..."}` (the backend names the database type, never its credentials).
 
 **Security and privacy (Phase 3b)**
 
@@ -378,7 +378,7 @@ own tab. Patient reminder checks in the menu run at most once a minute.
 | `ModuleNotFoundError` | Activate the virtual environment and `pip install -r requirements.txt` |
 | A selected model says "has not been saved yet" | Run `python train_model.py` to generate `models/all_models/` |
 | AI Assistant / Insight unavailable | Provide `GEMINI_API_KEY` (see above) |
-| Background images missing | `server.enableStaticServing = true` must stay in `.streamlit/config.toml` and the PNGs in `static/` |
+| Background images missing | `server.enableStaticServing = true` must stay in `.streamlit/config.toml` and the images in `static/` (WebP) |
 | Signed out after refreshing the page | Start with `streamlit run server.py` (not `app.py`). Sessions also end after 2 hours idle or 12 hours in total |
 | Signed out after opening a new tab | Expected: each tab signs in on its own, and closing a tab signs it out |
 | Confirmation or reset email doesn't arrive | Check Junk/Spam, then the admin's **Emails** tab (status and problem). Without `BREVO_API_KEY` no emails are sent |

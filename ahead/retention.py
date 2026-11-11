@@ -68,8 +68,16 @@ def run(force=False):
     if not force and previous and now - datetime.fromisoformat(previous["at"]) < MIN_GAP:
         return {"skipped": previous["at"]}
     with connection() as db:
+        cutoff = _stamp(now - timedelta(days=NOTICE_DAYS))
         notices = db.execute("DELETE FROM notifications WHERE created_at<? AND (dedupe_key IS NULL OR dedupe_key NOT LIKE ?)",
-                             (_stamp(now - timedelta(days=NOTICE_DAYS)), "prevention-recheck-%")).rowcount
+                             (cutoff, "prevention-recheck-%")).rowcount
+        # "Time to screen again" notices stay while their plan is still running, then follow the 90-day rule.
+        live = {str(r["id"]) for r in db.execute("SELECT id FROM prevention_plans WHERE status IN ('draft','active','paused')")}
+        old_rechecks = [r["id"] for r in db.execute("SELECT id,dedupe_key FROM notifications WHERE created_at<? AND dedupe_key LIKE ?",
+                                                     (cutoff, "prevention-recheck-%")).fetchall()
+                        if r["dedupe_key"].split("-")[2] not in live]
+        for notice_id in old_rechecks:
+            notices += db.execute("DELETE FROM notifications WHERE id=?", (notice_id,)).rowcount
         audit_rows = db.execute("DELETE FROM audit_log WHERE created_at<?",
                                 (_stamp(now - timedelta(days=AUDIT_DAYS)),)).rowcount
     from ahead import mailer
@@ -106,16 +114,19 @@ def erase_account(user_id):
     for doctor in doctors_for(user_id):
         revoke_doctor(user_id, doctor["id"])
     with connection() as db:
+        # Doctors' notices about this person name them and their results ("<name> saved a ... screening").
+        db.execute("DELETE FROM notifications WHERE dedupe_key LIKE ? OR dedupe_key IN "
+                   "(SELECT 'review-' || CAST(id AS TEXT) FROM screenings WHERE owner_id=?)", (f"linked-{user_id}-%", user_id))
+        db.execute("DELETE FROM screenings WHERE owner_id=?", (user_id,))
+        db.execute("DELETE FROM activity_events WHERE patient_id=?", (user_id,))
         if role == ROLE_PATIENT:
             for table, column in (("dose_logs", "patient_id"), ("lifestyle", "patient_id"), ("lifestyle_goals", "patient_id"),
-                                  ("challenge_days", "patient_id"), ("food_entries", "patient_id"),
-                                  ("activity_events", "patient_id")):
+                                  ("challenge_days", "patient_id"), ("food_entries", "patient_id")):
                 db.execute(f"DELETE FROM {table} WHERE {column}=?", (user_id,))
             db.execute("DELETE FROM medication_audit WHERE plan_id IN (SELECT id FROM medication_plans WHERE patient_id=?)", (user_id,))
             db.execute("DELETE FROM medication_plans WHERE patient_id=?", (user_id,))
             db.execute("DELETE FROM prevention_audit WHERE plan_id IN (SELECT id FROM prevention_plans WHERE patient_id=?)", (user_id,))
             db.execute("DELETE FROM prevention_plans WHERE patient_id=?", (user_id,))
-            db.execute("DELETE FROM screenings WHERE owner_id=?", (user_id,))
         db.execute("DELETE FROM record_predictions WHERE owner_id=?", (user_id,))
         db.execute("DELETE FROM records WHERE owner_id=?", (user_id,))
         db.execute("DELETE FROM notifications WHERE patient_id=?", (user_id,))
@@ -123,7 +134,7 @@ def erase_account(user_id):
         for table in ("calendar_feeds", "sessions", "account_tokens", "consents"):
             db.execute(f"DELETE FROM {table} WHERE user_id=?", (user_id,))
         db.execute("DELETE FROM email_outbox WHERE user_id=? OR to_email=?", (user_id, email))
-        db.execute("DELETE FROM rate_events WHERE subject=? OR subject LIKE ?", (email, email + "|%"))
+        db.execute("DELETE FROM rate_events WHERE subject=? OR substr(subject,1,?)=?", (email, len(email) + 1, email + "|"))
         # The audit trail keeps that something happened, not from where; a removed patient's rows lose the link too.
         db.execute("UPDATE audit_log SET ip='',details_json='{}' WHERE actor_id=? OR target_user_id=?", (user_id, user_id))
         if role == ROLE_PATIENT:
@@ -136,5 +147,6 @@ def erase_account(user_id):
             db.execute("UPDATE users SET email=?,name='Removed account',institution='',password_hash=?,preferences_json='{}',"
                        "email_verified_at=NULL,last_login_at=NULL,token_version=token_version+1,erased_at=? WHERE id=?",
                        (f"erased-{user_id}@erased.invalid", "erased:" + secrets.token_hex(16), _stamp(_now()), user_id))
-    audit("account_erased", target_user_id=user_id, role=role)
+    # A removed patient's id can be given to a new account (SQLite), so their erasure row points at no one.
+    audit("account_erased", target_user_id=None if role == ROLE_PATIENT else user_id, role=role)
     return 1

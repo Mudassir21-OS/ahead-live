@@ -341,7 +341,7 @@ def _queue(owner_id, disease, pipeline, model_name, threshold, required, stats):
     if record["score"] is not None:
         result_card(int(record["score"] >= record["threshold"]), record["score"],
                     DISEASES[disease]["long_label"], record["model"], record["threshold"], audience="doctor",
-                    status=_status(record), disease=disease, track=track)
+                    status=_status(record), disease=disease, track=track, values=values)
         if track:
             track_panel(track, "doctor")
         st.caption("Review the measurements and history independently before acting on this model output.")

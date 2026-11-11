@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 
 from ahead.storage import connection
 
-VERSION = "2026-11"
+VERSION = "2026-11b"   # b: Gemini free-tier use and review, re-check reminders, AI summaries on withdrawal
 
 TITLE = "How AHEAD uses your information"
 POINTS = [
@@ -24,14 +24,17 @@ POINTS = [
     ("Who can see it", "You, and the doctors you add to your care team (remove them at any time in Settings). "
      "AHEAD admins manage accounts only and cannot see health information."),
     ("AI features", "The assistant, result explanations, food photo estimates and doctor AI summaries you allow send "
-     "the information they need to Google's Gemini service to produce an answer. Using them is optional."),
+     "the information they need to Google's Gemini service to produce an answer. This version uses Gemini's free "
+     "tier, where Google may use what is sent to improve its services and people at Google may read it. Using "
+     "these features is optional."),
     ("Emails", "Emails never contain results, medicine names or other health details. They only say that something "
      "changed and link to AHEAD."),
-    ("How long it is kept", "Notifications are deleted after 90 days and email records after 30 days. If your account "
+    ("How long it is kept", "Notifications are deleted after 90 days (reminders to screen again stay while their plan runs) and email records after 30 days. If your account "
      "is switched off, everything in it is erased after one year. You can delete your screening history in "
      "Settings at any time."),
     ("Your choice", "You can withdraw this agreement in Settings → Preferences → Data & privacy. AHEAD then asks again "
-     "before you can use it; what's already saved stays until you delete it or the account is erased."),
+     "before you can use it and switches off doctors' AI summaries; what's already saved stays until you delete it "
+     "or the account is erased."),
 ]
 
 
@@ -74,6 +77,9 @@ def withdraw(user_id, ip=""):
     with connection() as db:
         changed = db.execute("UPDATE consents SET withdrawn_at=? WHERE user_id=? AND withdrawn_at IS NULL",
                              (_now(), user_id)).rowcount
+        # Sending data to Gemini rests on the agreement: withdrawing switches off every doctor's AI summaries,
+        # and agreeing again doesn't switch them back on by itself.
+        db.execute("UPDATE care_access SET ai_allowed=0 WHERE patient_id=?", (user_id,))
     if changed:
         audit("consent_withdrawn", actor_id=user_id, target_user_id=user_id, ip=ip)
     return bool(changed)

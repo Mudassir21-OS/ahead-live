@@ -176,7 +176,7 @@ def new_result(patient_id, screening_id, disease, values, score, threshold):
                    "intelligence", f"review-{screening_id}")
         else:
             notify(doctor["id"], "result", "New result",
-                   f"{who} saved a {DISEASES[disease]['label']} screening: {label} (lower risk, nothing urgent).",
+                   f"{who} saved a {DISEASES[disease]['label']} screening: {label} (below the model's threshold; no urgent rule triggered).",
                    "intelligence", f"review-{screening_id}")
         _review_email(doctor["id"], attention)
         told.append(doctor["id"])

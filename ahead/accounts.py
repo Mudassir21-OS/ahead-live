@@ -313,10 +313,18 @@ def token_is_live(token):
     return _valid(row, _now())
 
 
+def _void_pending_links(db, user_id, now=None):
+    """Pending email changes and reset links stop working once the password changes or every browser is
+    signed out: someone who knew the old password must not keep a way to move the account to their inbox."""
+    db.execute("UPDATE account_tokens SET used_at=? WHERE user_id=? AND used_at IS NULL AND purpose IN ('email_change','reset')",
+               (now or _stamp(), user_id))
+
+
 def sign_out_everywhere(user_id):
     with connection() as db:
         db.execute("UPDATE users SET token_version=token_version+1 WHERE id=?", (user_id,))
         db.execute("UPDATE sessions SET revoked_at=? WHERE user_id=? AND revoked_at IS NULL", (_stamp(), user_id))
+        _void_pending_links(db, user_id)
 
 
 def keep_session_after_password_change(session_id, user_id):
@@ -379,6 +387,7 @@ def use_link(token, new_password, ip=""):
         db.execute("UPDATE users SET password_hash=?,token_version=token_version+1,email_verified_at=COALESCE(email_verified_at,?) "
                    "WHERE id=?", (password_hash(new_password), now, row["user_id"]))
         db.execute("UPDATE sessions SET revoked_at=? WHERE user_id=? AND revoked_at IS NULL", (now, row["user_id"]))
+        _void_pending_links(db, row["user_id"], now)
     audit("password_set_from_link", actor_id=row["user_id"], target_user_id=row["user_id"], ip=ip, purpose=row["purpose"])
     with connection() as db:
         user = user_view(db.execute("SELECT * FROM users WHERE id=?", (row["user_id"],)).fetchone())
@@ -467,21 +476,32 @@ def notify_sign_up_attempt(email, ip=""):
 
 def request_email_change(user_id, new_email, ip=""):
     """Email a confirmation link to a new address. The old address stays in use until the link is opened.
-    Returns 'sent', 'taken', 'limit' (too many requests) or 'off' (emails are switched off)."""
+    Returns 'sent' (also for an address that is taken: nothing is sent then), 'limit' (too many requests)
+    or 'off' (emails are switched off)."""
     from ahead import mailer
     new_email = (new_email or "").strip().lower()
     if not mailer.enabled():
         return "off"
-    with connection() as db:
-        if db.execute("SELECT 1 FROM users WHERE email=? AND id!=?", (new_email, user_id)).fetchone():
-            return "taken"
-        row = db.execute("SELECT name FROM users WHERE id=?", (user_id,)).fetchone()
     if not _email_allowed(f"email_change|{user_id}", ip):
         return "limit"
+    with connection() as db:
+        taken = db.execute("SELECT 1 FROM users WHERE email=? AND id!=?", (new_email, user_id)).fetchone()
+        row = db.execute("SELECT name FROM users WHERE id=?", (user_id,)).fetchone()
+    if taken or _reserved_email(new_email):
+        # Same answer as a free address (nothing is sent), so Settings can't be used to find out who has an account.
+        audit("email_change_requested", actor_id=user_id, target_user_id=user_id, ip=ip)
+        return "sent"
     token = issue_link(user_id, "email_change", new_email=new_email)
     mailer.queue(new_email, "email_change", user_id, row["name"] if row else "", link=f"{site_url()}/?verify={token}")
     audit("email_change_requested", actor_id=user_id, target_user_id=user_id, ip=ip)
     return "sent"
+
+
+def _reserved_email(email):
+    """The bootstrap admin/doctor addresses from the environment (AHEAD_ADMIN_EMAIL, AHEAD_DOCTOR_EMAIL)."""
+    import os
+    return (email or "").strip().lower() in {(os.environ.get(k) or "").strip().lower()
+                                             for k in ("AHEAD_ADMIN_EMAIL", "AHEAD_DOCTOR_EMAIL")} - {""}
 
 
 def _email_allowed(subject, ip):

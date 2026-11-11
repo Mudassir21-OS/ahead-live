@@ -109,7 +109,9 @@ class EmailChangeTests(Base):
         self.assertIsNone(accounts.verify_email(token))                     # works once
 
     def test_taken_address_and_reset_still_go_to_the_confirmed_one(self):
-        self.assertEqual(accounts.request_email_change(self.p["id"], "d@test.com"), "taken")
+        # Same answer as a free address, and nothing is sent to the account that has it.
+        self.assertEqual(accounts.request_email_change(self.p["id"], "d@test.com"), "sent")
+        self.assertEqual(self.mails("email_change", "d@test.com"), [])
         accounts.request_email_change(self.p["id"], "attacker@evil.test")
         accounts.request_password_reset("attacker@evil.test")
         self.assertEqual(self.mails("reset", "attacker@evil.test"), [])
@@ -295,12 +297,21 @@ class RetentionReviewTests(Base):
         self.assertEqual(len(raw("SELECT * FROM audit_log WHERE action='signed_in'")), 1)
 
     def test_recheck_reminders_are_not_repeated_after_the_clean_up(self):
+        stamp = datetime.now(timezone.utc).isoformat()
+        with connection() as db:
+            db.execute("INSERT INTO prevention_plans(id,patient_id,doctor_id,disease,targets_json,recheck_date,status,"
+                       "created_at,updated_at) VALUES(1,?,?,'diabetes','[]','2026-01-01','active',?,?)",
+                       (self.p["id"], self.p["id"], stamp, stamp))
         notify(self.p["id"], "plan", "Time to screen again", "due", dedupe_key="prevention-recheck-1-2026-01-01")
         notify(self.p["id"], "t", "Old", "old", dedupe_key="old")
         with connection() as db:
             db.execute("UPDATE notifications SET created_at=?", ((datetime.now(timezone.utc) - timedelta(days=120)).isoformat(),))
         retention.run(force=True)
         self.assertEqual([n["title"] for n in notifications(self.p["id"])], ["Time to screen again"])
+        with connection() as db:   # once the plan has stopped, its old reminder follows the 90-day rule
+            db.execute("UPDATE prevention_plans SET status='stopped' WHERE id=1")
+        retention.run(force=True)
+        self.assertEqual(notifications(self.p["id"]), [])
 
 
 class AssistantPrivacyTests(Base):
