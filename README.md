@@ -1,385 +1,232 @@
-# ✚ AHEAD — Advanced Health Early Awareness and Disease Detection System
+# ✚ AHEAD — Advanced Health Early Awareness and Disease Detection
 
-**Senior Design Project** · Python · Streamlit · scikit-learn · XGBoost · Plotly · Gemini
+**Senior Design Project · American University of Ras Al Khaimah (AURAK)**
 
-AHEAD is an educational early-awareness screening platform. A user (or a clinician) enters
-lifestyle, medical-history and clinical values and receives a machine-learning screening
-estimate for **diabetes**, **cardiovascular disease** or **chronic kidney disease** — together
-with a gauge, next steps, the factors AHEAD noticed in the inputs and an optional AI-generated
-explanation.
+AHEAD is a web platform for early awareness of **diabetes**, **cardiovascular disease** and **chronic kidney
+disease**. Patients answer short health and lifestyle questions and get an explained machine-learning screening
+estimate; linked doctors review results, prescribe medication and prevention plans, and follow their patients'
+progress. It is built for privacy from the start: encrypted health data, recorded consent, retention rules and no
+health information in emails.
 
-> AHEAD does not diagnose disease and must not be used to start, stop or change treatment.
+**Live demo:** [ahead-hepa.onrender.com](https://ahead-hepa.onrender.com) (free hosting: the first visit after a
+quiet spell takes about a minute to wake up)
+
+> **Educational screening only.** AHEAD does not diagnose disease and must not be used to start, stop or change
+> treatment. The live site holds **test accounts only**; no real patient data.
 
 ---
 
-## Table of contents
+## Contents
 
 1. [Features](#features)
-2. [Project structure](#project-structure)
-3. [Setup](#setup)
-4. [Running the app](#running-the-app)
-5. [Demo accounts](#demo-accounts)
-6. [AI features (Gemini)](#ai-features-gemini)
-7. [Datasets](#datasets)
-8. [Re-training the models](#re-training-the-models)
-9. [How the machine learning works](#how-the-machine-learning-works)
-10. [Deploying on Render + Neon](#deploying-on-render--neon)
-11. [Common errors](#common-errors)
+2. [How it works](#how-it-works)
+3. [Machine learning results](#machine-learning-results)
+4. [Security and privacy](#security-and-privacy)
+5. [Testing](#testing)
+6. [Getting started](#getting-started)
+7. [Configuration](#configuration)
+8. [Project structure](#project-structure)
+9. [Limitations and future work](#limitations-and-future-work)
+10. [Team](#team)
 
 ---
 
 ## Features
 
-| Area | What it does |
+### For patients
+- **Screenings** for three conditions with a gauge, a clear result track (*See a doctor soon*, *At risk*, *Not
+  flagged*), the factors AHEAD noticed, next steps and a downloadable **PDF report**. Lab values (HbA1c, glucose,
+  creatinine, eGFR, urine ACR) are optional and checked by clinical rules.
+- **Care team:** link one or more doctors and remove them at any time.
+- **My plan:** medication and prevention plans from linked doctors, with dose check-offs and progress.
+- **Medicine reminders** in the patient's own phone or computer calendar (private `webcal://` link).
+- **Health & Lifestyle Tracker** (check-ins, trends, goals, 30×30 activity challenge) and a **Food Nutrition
+  Analyzer** (photo estimate, always confirmed by the patient).
+- **AI Assistant:** questions about the patient's own doses and score, and how-to questions about AHEAD, are
+  answered inside the app; general health questions go to Google Gemini, with streamed answers and read-aloud.
+
+### For doctors
+- **Linked patients:** saved assessments, score history, dose adherence and activity.
+- **Medication and prevention plans:** create, edit, pause and stop. The patient is notified of every change.
+- **Clinical Dashboard:** upload de-identified CSV/Excel cohorts, validate rows, score them, record review
+  decisions and export CSV/PDF.
+- **Notifications** for new results and newly linked patients (every result, or only those needing attention).
+
+### For administrators
+- **Accounts & Security:** create doctor accounts with one-time set-up links, switch accounts off or on, send
+  reset links, audit log, email delivery log, consent status and data-protection status.
+- Administrators manage accounts only and **never see health data**.
+
+---
+
+## How it works
+
+```mermaid
+flowchart LR
+    U[Patient / Doctor / Admin<br/>browser] -->|HTTPS| R[Render web service<br/>Streamlit + Starlette routes]
+    R --> M[ML models<br/>scikit-learn pipelines]
+    R --> DB[(Neon PostgreSQL<br/>AES-256-GCM encrypted health fields)]
+    R -->|outbox, no health data| B[Brevo email API]
+    R -->|general questions, photos,<br/>permitted summaries| G[Google Gemini]
+    GH[GitHub Actions<br/>weekly schedule] -->|POST /tasks/weekly| R
+    C[Phone / computer calendar] -->|webcal feed| R
+```
+
+| Layer | Technology |
 |---|---|
-| **Sign-in** | Patient, Doctor and Admin accounts; sign-in belongs to one browser tab (a reload keeps it, closing the tab ends it); email confirmation and self-service password reset; sign-in limits; public About / Contact / Help pages |
-| **Admin** | Accounts & Security page: add doctors with one-time set-up links, deactivate/reactivate (signs out at once), reset links, audit log. No health data |
-| **Overview** | Welcome hero with quick-start, KPI cards, session risk distribution, dataset and model-quality charts |
-| **Screenings** | Guided form per condition, six selectable model families (recommended first), gauge, next steps, risk-factor chips, urgent-care notice, AHEAD Insight (Gemini), model interpretation. Diabetes estimates whether HbA1c is likely to be in the prediabetes range or higher; kidney asks short lifestyle and health questions with kidney tests optional; cardiovascular compares answers with survey respondents who reported a heart attack (not a 10-year risk). Every result is sorted into *See a doctor soon*, *At risk* or *Not flagged* (`ahead/triage.py`) |
-| **Data & Analytics** | Dataset explorer, final test metrics, threshold sweep, algorithm comparison table |
-| **Clinical Dashboard** *(doctors)* | Review CSV/XLSX rows for missing/invalid values, derive age from DOB, correct incomplete records, score a cohort, record clinician decisions, and download CSV/PDF summaries |
-| **AI Assistant** | "Ask AHEAD" chat with suggested prompts; answers via Gemini (offline answers for the suggestions) |
-| **Settings** | Persistent profile/password, Light/Dark appearance, session history controls and account actions |
+| Interface | Streamlit (multi-page, role-based navigation, light and dark themes) |
+| Server | Starlette routes alongside Streamlit (`server.py`): sessions, calendar feed, health check, scheduled tasks, security headers |
+| Machine learning | scikit-learn and XGBoost pipelines, Plotly charts, ReportLab PDFs |
+| Data | PostgreSQL on Neon (SQLite for local development), versioned SQL migrations |
+| Email | Brevo HTTPS API through an outbox with retries and daily limits |
+| AI | Google Gemini (`google-genai`), optional and consent-based |
+| Hosting | Render (Frankfurt), GitHub Actions for the weekly job |
 
-### Patient wellness and linked care (experimental)
+---
 
-The patient navigation also includes **Health & Lifestyle Tracker** (transparent five-part lifestyle score,
-dated check-ins, trends, personal goals, manual 30×30 activity log), **Food Nutrition Analyzer**
-(photo preview, optional real Gemini image estimate, mandatory manual confirmation, meal history),
-**My plan** (the prevention plan a linked doctor approves, with progress from the tracker, plus
-doctor-assigned medicines and taken/skipped/unlogged dose tracking),
-**Notifications** (in-app reminders when the website is open), and an optional browser-speech **Voice Assistant**.
-Wellness is independent of the three disease models. Numeric wellness rules are educational heuristics, not
-validated clinical scales. A food photo is never analyzed without a configured Gemini key; manual entry
-remains available. The photo is sent to Google's model only when the user presses Analyze Food and is not
-stored by AHEAD. Nutrition estimates must be checked and confirmed by the patient. Voice speech recognition
-depends on browser support and is limited to short read-only answers; page buttons provide reliable navigation.
+## Machine learning results
 
-Patients explicitly add a doctor's account email under **Settings → Preferences → Care team** to grant
-that doctor access to their account records; they can revoke access there. A separate unchecked permission
-allows that doctor to send selected linked records to Gemini for an optional AI pre-consultation draft.
-The draft must be verified against the source records. The doctor-only **Advanced
-Analytics & Patient Intelligence** area reports only linked patients, their dated saved assessments,
-medication adherence, and record-based summaries. Doctors create/edit/pause/resume/stop medication plans;
-patients can only log their own scheduled doses. The original **Clinical Dashboard** handles imported
-de-identified files separately. Imported rows are not automatically merged with registered patient accounts.
-The default record-based summary does not use generative AI. Voice questions are
-asked through the microphone in the **AI Assistant** chat bar: Gemini transcribes the recording (it is not
-stored), page requests such as "open medication" and the patient's own status questions are answered inside
-the app, and answers can be read aloud by the browser. The voice and photo flows have explicit fallback paths
-and make no diagnostic or prescribing decisions.
+All models are trained on **real CDC survey data** (NHANES 1999–2023 and BRFSS 2022); nothing is synthetic. For
+diabetes and kidney, the newest NHANES cycle (2021–2023) is held out as the test set, so the models are tested on
+people surveyed after the training data. Thresholds are tuned on a separate validation set.
 
-Database changes are versioned SQL files in `ahead/migrations/` (`001_initial.sql`, `002_…`). They run
-automatically when the app starts, each one once, and are recorded in the `schema_migrations` table. With
-`DATABASE_URL` set the app uses PostgreSQL (the live site uses Neon); without it, a local SQLite file
-(`AHEAD_DB_PATH`, default `ahead.sqlite3`). Make a Neon backup branch before deploying a new migration.
-`GEMINI_API_KEY` (or `GOOGLE_API_KEY`) enables optional food photo analysis and the AI assistant/insights.
-Do not enter real patient data: AHEAD is tested with test users only, and real patient data would need
-UAE hosting and ethics approval first (UAE Federal Law No. 2 of 2019).
-In-app reminders are calculated when pages are visited; there are no background jobs, push, SMS, or email.
-Times in medication scheduling use `Asia/Dubai`; historical timestamps are stored in UTC.
+| Condition | Model | Test rows | ROC-AUC (95% CI) | Sensitivity | Specificity | Simple baseline AUC |
+|---|---|---|---|---|---|---|
+| Diabetes (HbA1c ≥ 5.7 %) | Logistic regression | 4,966 | **0.735** (0.719–0.748) | 86.0 % | 48.3 % | 0.722 (partial ADA risk test) |
+| Kidney marker (eGFR < 60 or ACR ≥ 30) | Logistic regression | 5,551 | **0.776** (0.759–0.792) | 66.2 % | 77.4 % | 0.750 (risk-factor count) |
+| Cardiovascular (past heart attack) | Logistic regression | 49,205 | **0.828** (0.821–0.834) | 79.7 % | 71.0 % | 0.729 (risk-factor count) |
+
+Every model beats its baseline (paired bootstrap, 1,000 resamples, p < 0.001). Full results with confusion
+matrices, calibration and fairness by sex and age come from `scripts/evaluate_models.py` and are saved in
+[`docs/evaluation/results.json`](docs/evaluation/results.json). Data sources and label definitions are in
+[`docs/data_sources.md`](docs/data_sources.md).
+
+**Honest limits:** one threshold serves every age, so diabetes flags almost everyone aged 60+, and kidney and
+heart rarely flag people under 40. The app shows a note on those results. The heart model learns what people who
+*had* a heart attack look like; it is not a 10-year forecast.
+
+---
+
+## Security and privacy
+
+| Area | What AHEAD does |
+|---|---|
+| Accounts | Salted PBKDF2 passwords, email confirmation, one-time links bound to their purpose, rate limits, no account enumeration |
+| Sessions | Sign-in belongs to one browser tab (HttpOnly cookie + tab secret), 2 h idle / 12 h maximum, sign out everywhere |
+| Access control | Patients see only their own data; doctors only linked patients; admins no health data |
+| Encryption | Health values encrypted per field with AES-256-GCM (`AHEAD_FIELD_KEY`, rotatable); start-up refuses a missing key |
+| Consent | Versioned consent text recorded per patient; withdrawing it is respected everywhere, including AI features |
+| Retention | Notifications 90 days, email records 30 days, audit log 1 year, switched-off accounts erased after 1 year |
+| Email | Never contains health values, medicine names or patient names; bodies deleted once sent |
+| Browser | Strict Content-Security-Policy (no inline scripts, no eval, no framing) |
+| AI | Patient-specific answers stay inside AHEAD; Gemini gets only what each feature needs, with consent |
+
+Independent code reviews were run before submission (security, data protection and a final full review). Findings, fixes and accepted risks are in
+[`docs/risk_register.md`](docs/risk_register.md).
+
+---
+
+## Testing
+
+- **534 automated tests** in 33 files (pytest), run on SQLite and on PostgreSQL, with and without the
+  encryption key; each encrypted run also checks that no health value was stored unencrypted.
+- Layout checks (`scripts/check_redesign.py`) and browser checks of every page for every role at desktop and phone
+  size, with zero Content-Security-Policy violations.
+- Upgrade checks: a database from the previous version is started on the new one.
+
+```bash
+python -m pytest -q                                   # SQLite
+AHEAD_TEST_DATABASE_URL=postgresql://... python -m pytest -q   # local PostgreSQL only
+```
+
+---
+
+## Getting started
+
+```bash
+git clone <this repository>
+cd ahead
+python -m venv .venv
+.venv\Scripts\activate            # macOS/Linux: source .venv/bin/activate
+pip install -r requirements.txt
+streamlit run server.py
+```
+
+Open `http://localhost:8501` and create a patient account on the sign-in page. Without `DATABASE_URL` the app
+uses a local SQLite file. Create the first admin with
+`python scripts/create_account.py --email you@example.com --name "Your Name" --role Admin`, then add doctors from
+**Accounts & Security**. For a classroom run, `run_windows.bat` also creates local demo accounts.
+
+The trained models are included. To rebuild the datasets and models from CDC's public files, see
+[Re-training the models](docs/technical_guide.md#re-training-the-models).
+
+---
+
+## Configuration
+
+Settings are environment variables (Render → Environment in production). Secrets never go in the repository.
+
+| Variable | Purpose |
+|---|---|
+| `DATABASE_URL` | PostgreSQL connection (omit for local SQLite) |
+| `AHEAD_FIELD_KEY` | Encryption key for health values (keep a copy in a password manager) |
+| `AHEAD_PUBLIC_URL` | The site's address, used in emailed links |
+| `BREVO_API_KEY`, `AHEAD_EMAIL_FROM` | Turn emails on and set the sender |
+| `GEMINI_API_KEY` | Turn the AI features on |
+| `AHEAD_TASK_KEY` | Secret for the weekly scheduled task |
+
+The full list, deployment steps on Render + Neon, email rules, the calendar feed and troubleshooting are in the
+**[technical guide](docs/technical_guide.md)**.
 
 ---
 
 ## Project structure
 
 ```
-SDP-Project-AHEAD/
-├── app.py                  ← entry point: page config, routing, sidebar
-├── ahead/
-│   ├── config.py           ← disease registry, form layout, labels, navigation, demo accounts
-│   ├── resources.py        ← cached models / metadata / datasets / images / Gemini client
-│   ├── clinical_data.py    ← row-by-row upload validation and DOB calculation
-│   ├── storage.py          ← local SQLite accounts and doctor review queue
-│   ├── reports.py          ← downloadable individual screening PDFs
-│   ├── theme.py            ← colour tokens (light & dark), global CSS, Plotly styling
-│   ├── components.py       ← shared UI pieces + session-state helpers
-│   ├── screening.py        ← the guided screening flow (form → prediction → guidance)
-│   ├── fieldcrypt.py       ← encryption of health values in the database (AHEAD_FIELD_KEY)
-│   ├── consent.py          ← patient consent text and records
-│   ├── retention.py        ← what is deleted when (notices, email records, switched-off accounts)
-│   ├── browser.py          ← small browser jobs as components (no inline scripts, for the CSP)
-│   └── pages/
-│       ├── public.py       ← login, about, contact, help
-│       ├── overview.py     ← dashboard
-│       ├── screenings.py   ← condition picker + predictor
-│       ├── analytics.py    ← data & model explorer
-│       ├── clinical.py     ← doctor-only cohort screening
-│       ├── assistant.py    ← Ask AHEAD chat
-│       ├── consent_page.py ← the consent page and the Data & privacy panel
-│       └── settings.py     ← settings tabs
-├── train_model.py          ← benchmarks six model families per disease, saves models + metadata
-├── scripts/build_nhanes_training.py ← builds the NHANES diabetes and kidney training files
-├── scripts/missing_inputs.py ← measures every model with optional model inputs left blank
-├── login.css               ← styles for the public (pre-login) pages
-├── assets/                 ← favicon and SVG icons (inlined as data URIs)
-├── static/                 ← large background images, served by Streamlit at app/static/…
-├── data/                   ← nhanes_diabetes.csv · nhanes_kidney.csv · heart.csv · nhanes/ (source extract)
-├── models/
-│   ├── <disease>_model.pkl ← recommended pipeline per disease
-│   ├── all_models/         ← every benchmarked pipeline (<disease>_<model>.pkl)
-│   ├── model_meta.json     ← features, metrics, thresholds, benchmark results
-│   └── missing_inputs.json ← test metrics and thresholds for blank optional inputs
-├── .streamlit/config.toml  ← Streamlit theme + server settings
-└── requirements.txt
+ahead/
+├── server.py              ← production entry point (Streamlit + HTTP routes + background jobs)
+├── app.py                 ← routing and navigation
+├── train_model.py         ← trains and benchmarks six model families per condition
+├── ahead/                 ← application package
+│   ├── pages/             ← one module per page (screenings, plans, dashboards, admin, assistant, ...)
+│   ├── migrations/        ← versioned SQL migrations, run at start-up
+│   ├── screening.py       ← screening flow       ├── triage.py      ← result tracks and lab rules
+│   ├── accounts.py        ← sessions and links   ├── fieldcrypt.py  ← field encryption
+│   ├── consent.py         ← consent              ├── retention.py   ← retention and erasure
+│   ├── platform_data.py   ← care team and plans  ├── mailer.py      ← email outbox
+│   └── reports.py         ← PDF reports          └── calendar_feed.py ← medicine reminder feed
+├── models/                ← trained pipelines and metadata
+├── data/                  ← CDC training data
+├── scripts/               ← data building, evaluation, account and key tools
+├── tests/                 ← automated tests
+└── docs/                  ← technical guide, evaluation, data sources, risk register
 ```
 
 ---
 
-## Setup
+## Limitations and future work
 
-```bash
-python -m venv .venv
-source .venv/bin/activate        # Windows: .venv\Scripts\activate
-pip install -r requirements.txt
-```
+**Limitations:** trained on US survey data, not UAE patients; one threshold for all ages; the heart label is a past
+event; free hosting is slow and sleeps when idle; English only.
 
-Python 3.12 or 3.13 is recommended.
-
-Without `DATABASE_URL` the app keeps its data in a local SQLite file (`ahead.sqlite3`, or `AHEAD_DB_PATH`).
-That is for development only; the live site uses PostgreSQL on Neon (see [Deploying](#deploying-on-render--neon)).
+**Future work:** retraining and validation with UAE clinical data and per-age-group thresholds; UAE hosting and
+ethics approval before any real patients (UAE Federal Law No. 2 of 2019); a self-hosted language model in the UAE
+instead of Gemini; Arabic; Sign in with Microsoft; a usability study with patients and clinicians.
 
 ---
 
-## Running the app
+## Team
 
-```bash
-streamlit run server.py
-```
+Senior Design Project, American University of Ras Al Khaimah (AURAK), 2026.
 
-Open the printed URL (usually `http://localhost:8501`). `server.py` is the Streamlit app plus three small HTTP
-routes (`/healthz`, `/auth/session`, `/auth/logout`) and the background email sender.
+- Syed Mudassir Shahab
+- Hamad Alshehhi
+- Emna Daly
+- Ahad Alnuaimi
+- Obaid Almazrouei
+- Omar Alnuaimi
 
-**Sign-in belongs to one tab.** Reloading keeps you signed in; closing the tab signs you out; a new tab, or typing
-the link again, shows the sign-in page. Each tab keeps a random secret in `sessionStorage`; the session cookie
-(HttpOnly, SameSite=Strict, one per tab: `ahead_s_<tab id>`) only works together with that tab's secret. AHEAD
-holds health data, so a shared or family computer must not stay signed in once the tab is closed.
-(`streamlit run app.py` also works for quick UI work, but then a reload signs you out.)
+**Supervisor:** Dr Khaled Abdelgader Balawafi
 
-**Emails** (Brevo's HTTPS API, `ahead/mailer.py`) are off until `BREVO_API_KEY` is set. When on: new patients
-confirm their email before the first sign-in, "Forgot your password?" emails a reset link, new doctors get their
-set-up link by email, and people are told when their password or email changes or their account is switched off
-or on. Changing your email in Settings needs your current password, and the new address only takes over once its
-confirmation link is opened. Admin password-reset links go only to the account's own inbox. Emails never contain
-health information or anyone's name. `AHEAD_PUBLIC_URL` is required once emails are on (emailed links use only it). They wait in an outbox table with retries, a daily budget
-(`AHEAD_EMAIL_DAILY_LIMIT`, default 250) and per-recipient caps; the text is deleted once sent.
-
-**Notifications and optional emails** (`ahead/alerts.py`). Doctors have a Notifications page too: a new linked
-patient, and a linked patient's saved result that AHEAD marks *urgent* or *at risk*. With emails on, people can also
-get (each switchable in **Settings → Preferences → Emails**): patients, "your doctor updated your medication /
-prevention plan" (at most one an hour); doctors, "a linked patient has a new result to review" (at most one an hour)
-and "a patient added you as their doctor"; anyone, an opt-in weekly "you have N updates". These emails never name a
-patient, a medicine or a result. Per-dose reminders, high-risk alerts to the patient and food nudges are never emailed.
-
-**Weekly summary timer.** Render's free plan has no cron, so `.github/workflows/weekly-summary.yml` calls
-`POST /tasks/weekly` on Sundays. It needs `AHEAD_TASK_KEY` (24+ random characters) in Render, and the repository
-secrets `AHEAD_URL` and `AHEAD_TASK_KEY`. GitHub runs schedules only from the repository's default branch.
-
-**Calendar reminders** (`ahead/calendar_feed.py`). On **My plan → Add reminders to my calendar** (also in Settings) a
-patient gets a private link, `webcal://<site>/calendar/<token>.ics`, that phones and computers subscribe to, so each
-dose time becomes a calendar reminder that follows the doctor's changes. There's also a one-off `.ics` download.
-Events say "AHEAD medicine reminder" unless the patient chooses to show medicine names. "Make a new link" stops the
-old one.
-
-Create a patient account on the sign-in page. For the first admin, run
-`python scripts/create_account.py --email you@example.com --name "Your Name" --role Admin`; it asks for the
-password (shown as `*`). The admin then adds doctors from **Accounts & Security**.
-
-**Tests:** `python -m pytest -q` runs everything on throw-away SQLite files. To run the same tests on PostgreSQL,
-set `AHEAD_TEST_DATABASE_URL` to a *local* database (the tests refuse any other host, so they can never touch Neon).
-
----
-
-## Demo accounts
-
-| Role | Email | Password |
-|---|---|---|
-| Patient | `user@ahead.demo` | `user123` |
-| Doctor | `doctor@ahead.demo` | `doctor123` |
-| Admin | `admin@ahead.demo` | `admin123` |
-
-For a **local** classroom run only: set `AHEAD_ENABLE_DEMO_ACCOUNTS=1` (`run_windows.bat` does). They are never
-created on PostgreSQL, so they can't exist on the live site. Passwords are stored as salted PBKDF2 hashes.
-
-Clinical uploads use the form's columns. Age and the optional columns (lab values, readings and the heart history questions) may be left out. An optional `DOB`, `DateOfBirth`, `date_of_birth`, or `Date of Birth` column (YYYY-MM-DD) fills age or the heart model's age category. Missing and invalid values appear per row and are not scored until corrected. Correct a row and save it in the review queue, then score eligible records. Clinicians can mark a record reviewed or excluded and add a note. The file is limited to 5,000 rows and 15 MB. The PDF and CSV contain entered data; handle downloads appropriately.
-
-The app is English only. Only account emails are sent (see Running the app); there are no text or push notifications. The map-search link does not show live appointment availability.
-
----
-
-## AI features (Gemini)
-
-AHEAD Insight (personalised result explanation) and the AI Assistant use Google Gemini
-through the `google-genai` SDK. Provide an API key in **either** place:
-
-```bash
-export GEMINI_API_KEY="your-key"          # environment variable
-```
-
-or in `.streamlit/secrets.toml` (git-ignored):
-
-```toml
-GEMINI_API_KEY = "your-key"
-```
-
-Without a key the app still works: Insight shows a notice and the Assistant answers the
-suggested questions from built-in text. The model name lives in `ahead/config.py`
-(`GEMINI_MODEL`).
-
----
-
-## Datasets
-
-All three models are trained on real CDC survey data; nothing is generated or synthetic. Sources,
-licences, label definitions, held-out results and limitations are in
-[`docs/data_sources.md`](docs/data_sources.md).
-
-| Condition | File | Source | Records | Target (1 means) | Test set |
-|---|---|---|---|---|---|
-| Diabetes | `data/nhanes_diabetes.csv` | CDC NHANES 1999-2023 (public domain) | 53,903 | `hba1c_57_or_higher`: HbA1c ≥ 5.7 % at the exam, in adults never told they have diabetes | 2021-2023 cycle (4,966) |
-| Cardiovascular | `data/heart.csv` | CDC BRFSS 2022 via Kaggle, Kamil Pytlak (CC0) | 246,022 | `HadHeartAttack`: ever told they had a heart attack (a past event) | random 20 % (49,205) |
-| Kidney health | `data/nhanes_kidney.csv` | CDC NHANES 1999-2023 (public domain) | 60,396 | `kidney_marker`: eGFR < 60 or urine ACR ≥ 30 mg/g at one visit | 2021-2023 cycle (5,551) |
-
-25.8 % of diabetes rows, 16.8 % of kidney rows and 5.5 % of heart rows are positive, which is why the app
-reports sensitivity, specificity, precision and ROC-AUC alongside accuracy. Lab values are never inputs to
-the diabetes or kidney models (they define the labels); the app checks them with rules instead.
-
-The two NHANES files are built from CDC's raw public-use files: `scripts/fetch_nhanes.py` downloads them,
-`scripts/rebuild_nhanes.py` merges and cleans them into `data/nhanes/nhanes_1999_2023_research.csv.gz` (with
-CDC's recommended creatinine corrections) and `scripts/build_nhanes_training.py` writes the training files. The earlier `diabetes.csv` and
-`kidney_disease.csv` were removed: the kidney file was synthetic and the diabetes file's origin and licence
-were unknown.
-
-| Condition | Recommended model | Threshold | Test AUC | Sensitivity | Specificity | Precision |
-|---|---|---|---|---|---|---|
-| Diabetes | Logistic regression | 0.21 | 0.735 | 86.0 % | 48.3 % | 39.6 % |
-| Cardiovascular | Logistic regression | 0.05 | 0.828 | 79.8 % | 71.0 % | 13.7 % |
-| Kidney health | Logistic regression | 0.22 | 0.776 | 66.2 % | 77.5 % | 37.7 % |
-
-For comparison, a partial ADA diabetes risk score reaches a test AUC of 0.722 on the same diabetes test rows.
-
----
-
-## Re-training the models
-
-The trained pipelines are included. To rebuild everything:
-
-```bash
-python scripts/fetch_nhanes.py            # CDC NHANES files into data/nhanes/raw/ (~283 MB, not committed)
-python scripts/rebuild_nhanes.py          # data/nhanes/nhanes_1999_2023_research.csv.gz
-python scripts/build_nhanes_training.py   # data/nhanes_diabetes.csv, data/nhanes_kidney.csv
-python train_model.py
-python scripts/missing_inputs.py
-```
-
-For each disease `train_model.py`:
-
-1. splits the data: for diabetes and kidney the 2021-2023 NHANES cycle is the test set and the earlier
-   cycles are split 80 % train / 20 % validation (stratified); for heart it is a stratified
-   64 % train / 16 % validation / 20 % test,
-2. trains Random Forest, Logistic Regression, Gradient Boosting, SVM, Decision Tree and XGBoost
-   inside a `Pipeline(preprocessor → classifier)`, without class re-weighting so scores stay close to
-   observed rates,
-3. saves every pipeline to `models/all_models/` so the app can compare them,
-4. recommends Logistic Regression for every condition (its score moves one way per answer and can be
-   explained; the gap to the best family's validation ROC-AUC is recorded),
-5. tunes each model's probability threshold on the validation set to maximise Youden's J
-   (sensitivity + specificity − 1),
-6. reports final metrics and a calibration check once on the untouched test set and writes
-   `models/model_meta.json` (including the data source, label definition, population and split).
-
-It also writes `models/feature_summary.json`: the small per-input statistics the screening form needs, so the
-app never parses the full datasets (heart.csv is 82 MB) just to draw a form. After changing a dataset without
-retraining, run `python scripts/build_feature_summary.py`; a test fails if the file no longer matches.
-
-`scripts/missing_inputs.py` measures every saved model with each allowed pattern of optional model inputs
-left blank and writes `models/missing_inputs.json`. No current model has optional model inputs, so the file
-lists none.
-
----
-
-## How the machine learning works
-
-* **Preprocessing** — numeric columns are median-imputed and standardised; categorical columns
-  are most-frequent-imputed and one-hot encoded (`ColumnTransformer`).
-* **Prediction** — `predict_proba()` gives the model's score for the condition; the result is
-  flagged when it reaches the chosen model's own threshold, tuned on the validation set for every benchmark model.
-  The heart label is a past heart attack, so the heart score is close to the share of BRFSS respondents
-  with similar answers who reported one; it is not a 10-year or future risk.
-* **Heart history** — the heart form also asks about a past heart attack and angina (`HadHeartAttack`,
-  `HadAngina`; never model inputs). A Yes to either, or to a past stroke (`HadStroke`, also a model input),
-  puts the result on *See a doctor soon* whatever the score, and no prevention plan is offered for it.
-  Heart screenings and uploads without these answers still score; a blank answer is not checked.
-* **Lab values** — HbA1c, glucose, creatinine, eGFR and urine ACR are not model inputs; entered values
-  are checked by the rules in `ahead/triage.py`, and a measured value counts for more than the model's
-  estimate: diabetes HbA1c ≥ 6.5 % or glucose ≥ 200 mg/dL → *See a doctor soon*, HbA1c 5.7–6.4 % → *At risk*,
-  HbA1c < 5.7 % → *Not flagged*; kidney eGFR < 60 or ACR ≥ 30 mg/g → *See a doctor soon* (repeat the test soon
-  to rule out a short-term change, and at about 3 months to confirm it), eGFR ≥ 60 with ACR < 30 mg/g → *Not
-  flagged*. Without these labs the model decides. eGFR is
-  worked out from serum creatinine with the 2021 race-free CKD-EPI equation when only creatinine is entered.
-* **Older saved records** — kidney screenings and uploads saved with the retired kidney form keep their keys
-  (`config.LEGACY_FIELDS`); they still display, sort into a track and print, but are never re-scored. Their HbA1c
-  (≥ 6.5 %) and fasting blood sugar (≥ 126 mg/dL) still make them *See a doctor soon* (`triage.LEGACY_RULES`).
-* **Interpretation** — tree models expose `feature_importances_`, Logistic Regression uses
-  absolute coefficient magnitude; RBF-SVM has no per-feature importance.
-* **Rule-based factors** — independent of the model, the app highlights entered values that are
-  commonly discussed with a clinician (e.g. HbA1c ≥ 5.7 %, BMI ≥ 30, eGFR < 60).
-
----
-
-## Deploying on Render + Neon
-
-The live site runs on **Render** (web service, free plan, Frankfurt) with **Neon** PostgreSQL (Frankfurt).
-`render.yaml` describes the service; Render wakes it on the first visit after 15 idle minutes (about a minute).
-
-1. **Neon:** create a project `ahead` (region Frankfurt). Copy the connection string (Dashboard → Connect).
-2. **Render:** New → Blueprint → pick this repository and branch. When asked, paste the Neon string into
-   `DATABASE_URL`, and add `GEMINI_API_KEY` if you use the AI features. Secrets live only in Render.
-3. After the first deploy, set `AHEAD_PUBLIC_URL` to the site address (used in set-up and reset links).
-   For emails, add `BREVO_API_KEY` (a Brevo API key, v3) and optionally `AHEAD_EMAIL_FROM` (a sender verified
-   in Brevo; default `aurak.events.noreply@gmail.com`). Render's free plan blocks SMTP, so AHEAD uses the HTTPS API.
-4. **First admin** (from your computer, once): set `DATABASE_URL` in your terminal to the Neon string, then run
-   `python scripts/create_account.py --email … --name … --role Admin`. Sign in with **Doctor / Admin** selected.
-5. Migrations run on every start. Before a deploy that adds a migration, create a Neon backup branch.
-
-Health check: `GET /healthz` returns `{"status": "ok", "database": "ok", "backend": "..."}` (the backend names the database type, never its credentials).
-
-**Security and privacy (Phase 3b)**
-
-* **Encrypted health values.** Set `AHEAD_FIELD_KEY` (32 random bytes in base64; make one with
-  `python -c "from ahead.fieldcrypt import make_key; print(make_key())"`). Screening and lifestyle answers, clinic
-  records, food logs, goals, medicine and prevention plans, their audit trails and notice texts are then stored
-  AES-256-GCM encrypted; values saved before the key was set are encrypted in the background after the next start.
-  **Losing the key loses the encrypted data**: keep it in a password manager. To change it, set `new,old`, wait until
-  Accounts & Security → Data protection says nothing uses the old key, then remove the old one. If the database holds
-  values for a key AHEAD doesn't have, start-up stops with an error (Render keeps the previous deploy running).
-  Risk scores, dates and account details stay readable (the doctor pages sort and filter on them).
-* **Consent.** Patients agree to "How AHEAD uses your information" when they sign up; anyone without a current
-  agreement sees it after signing in. Each agreement is recorded (`consents`), and patients can withdraw it in
-  Settings → Preferences → Data & privacy. Changing `VERSION` in `ahead/consent.py` asks everyone again.
-* **Retention** (`ahead/retention.py`): notifications are deleted after 90 days, email records after 30, and accounts
-  switched off for a year are erased. It runs at start-up (at most daily), weekly, and from the admin page.
-* **Content-Security-Policy** (`server.py`): scripts only from the site itself (no inline scripts, no eval), no
-  framing, network requests only to the site. `AHEAD_CSP=report` makes it report-only if a future Streamlit version
-  needs something it doesn't allow (the browser console then lists it).
-
-Speed on the free plan (0.1 CPU): at start-up the server loads the recommended models in the background
-(`AHEAD_WARM_UP=0` turns this off), so the first screening doesn't wait for them. The Analytics charts are
-cached, and its disease tabs and the doctor Intelligence tabs are fragments: a widget there reruns only its
-own tab. Patient reminder checks in the menu run at most once a minute.
-
----
-
-## Common errors
-
-| Error | Fix |
-|---|---|
-| "No trained model is available" | Run `python train_model.py` to create `models/` |
-| `ModuleNotFoundError` | Activate the virtual environment and `pip install -r requirements.txt` |
-| A selected model says "has not been saved yet" | Run `python train_model.py` to generate `models/all_models/` |
-| AI Assistant / Insight unavailable | Provide `GEMINI_API_KEY` (see above) |
-| Background images missing | `server.enableStaticServing = true` must stay in `.streamlit/config.toml` and the images in `static/` (WebP) |
-| Signed out after refreshing the page | Start with `streamlit run server.py` (not `app.py`). Sessions also end after 2 hours idle or 12 hours in total |
-| Signed out after opening a new tab | Expected: each tab signs in on its own, and closing a tab signs it out |
-| Confirmation or reset email doesn't arrive | Check Junk/Spam, then the admin's **Emails** tab (status and problem). Without `BREVO_API_KEY` no emails are sent |
-| Blank page after editing | Hard-refresh the browser (`Ctrl/Cmd + Shift + R`) |
+**Data:** CDC National Health and Nutrition Examination Survey (public domain); CDC Behavioral Risk Factor
+Surveillance System 2022, prepared by Kamil Pytlak on Kaggle (CC0).
