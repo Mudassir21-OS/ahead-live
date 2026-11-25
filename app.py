@@ -55,13 +55,14 @@ from ahead.pages.consent_page import needs_consent, render_consent_gate  # noqa:
 init_db()
 startup_platform()
 init_state()
+if not st.session_state.authenticated:
+    # Before the tab-identity component: its first rerun then carries this page, not the home page, so a reload
+    # doesn't push an extra "/" into the browser history (ahead/navigation.py).
+    navigation.register_signed_out()
 tab = mount_tab_identity()   # this browser tab's own identity (sessionStorage): sign-ins belong to one tab
 ready = restore(tab)         # a reload of a signed-in tab signs back in; deactivated accounts are signed out
 browser_scripts()            # sets or clears this tab's cookie after signing in or out
 inject_global_css()
-
-if not st.session_state.authenticated:
-    navigation.register_signed_out()   # keep a page's address through the sign-in screens (ahead/navigation.py)
 
 if not ready and not st.session_state.get("skip_tab_wait"):
     apply_theme(force_light=True)

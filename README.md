@@ -114,7 +114,7 @@ heart rarely flag people under 40. The app shows a note on those results. The he
 | Accounts | Salted PBKDF2 passwords, email confirmation, one-time links bound to their purpose, rate limits, no account enumeration |
 | Sessions | Sign-in belongs to one browser tab (HttpOnly cookie + tab secret), 2 h idle / 12 h maximum, sign out everywhere |
 | Access control | Patients see only their own data; doctors only linked patients; admins no health data |
-| Encryption | Health values encrypted per field with AES-256-GCM (`AHEAD_FIELD_KEY`, rotatable); start-up refuses a missing key |
+| Encryption | Health values encrypted per field with AES-256-GCM (`AHEAD_FIELD_KEY`, rotatable); start-up stops if the database holds encrypted values the key can't open (set the key before the first deploy) |
 | Consent | Versioned consent text recorded per patient; withdrawing it is respected everywhere, including AI features |
 | Retention | Notifications 90 days, email records 30 days, audit log 1 year, switched-off accounts erased after 1 year |
 | Email | Never contains health values, medicine names or patient names; bodies deleted once sent |

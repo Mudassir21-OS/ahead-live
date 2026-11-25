@@ -64,12 +64,23 @@ def sync(keys, home, titles):
         st.session_state.nav = home                      # just signed in: start at home
     elif seen is not None and url_key != seen:
         st.session_state.nav = url_key                   # back/forward or a typed address
+        _arrived(url_key, seen)
     elif seen is None and (entry or url_key) != home:
         st.session_state.nav = entry or url_key          # a reload on a page's address
     if st.session_state.get("nav") not in keys:
         st.session_state.nav = home
     if st.session_state.nav != url_key:
         switch(st.session_state.nav)
+
+
+def _arrived(key, came_from):
+    """The tidy-up go_to() does (ahead/components.py), for a page reached with back/forward."""
+    if key == "assistant":
+        st.session_state.assistant_return = came_from    # the assistant's "← Back" returns where you came from
+    elif key != "screenings":
+        st.session_state.active_screening = None         # leaving the screenings: a later visit starts fresh
+    st.session_state.close_menu = st.session_state.get("menu_seq", 0) + 1   # fold the phone menu away
+    st.session_state.menu_seq = st.session_state.close_menu
 
 
 def mark_fresh_sign_in():
