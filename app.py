@@ -1,5 +1,5 @@
 """
-AHEAD — Advanced Health Early Awareness and Disease Detection System
+AHEAD — Analytical Health Early Awareness and Detection
 Clinical Screening Portal · Senior Design Project
 
 Entry point: page configuration, routing and the sidebar.  Everything else

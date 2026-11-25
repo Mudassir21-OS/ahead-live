@@ -342,7 +342,7 @@ def _account_tab(user: dict) -> None:
         """
 <div class="settings-panel">
     <h2>About AHEAD</h2>
-    <p>Advanced Health Early Awareness and Disease Detection — a Senior Design machine-learning screening
+    <p>Analytical Health Early Awareness and Detection — a Senior Design machine-learning screening
     prototype for diabetes, cardiovascular disease and chronic kidney disease. It provides educational
     screening estimates and does not diagnose disease.</p>
 </div>

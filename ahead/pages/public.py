@@ -171,7 +171,7 @@ def render_login() -> None:
             <img class="ahead-login-logo-icon" src="{image_data_uri('logo.svg')}" alt="AHEAD logo">
             <div class="ahead-login-logo-text">AHEAD</div>
         </div>
-        <h1>Advanced Health<br>Early Awareness and<br>Disease Detection System</h1>
+        <h1>Analytical Health<br>Early Awareness<br>and Detection</h1>
         <div class="ahead-login-description">
             AI-powered health screening designed to support earlier awareness and smarter healthcare decisions.
         </div>
@@ -269,7 +269,7 @@ PUBLIC_CONTENT = {
         "eyebrow": "ABOUT THE PROJECT",
         "title": "About AHEAD",
         "intro": (
-            "Advanced Health Early Awareness and Disease Detection is a Senior Design "
+            "Analytical Health Early Awareness and Detection is a Senior Design "
             "machine-learning project focused on early-awareness screening for chronic disease."
         ),
         "cards": [

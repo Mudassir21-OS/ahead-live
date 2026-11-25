@@ -1,4 +1,4 @@
-# ✚ AHEAD — Advanced Health Early Awareness and Disease Detection
+# ✚ AHEAD — Analytical Health Early Awareness and Detection
 
 **Senior Design Project · American University of Ras Al Khaimah (AURAK)**
 

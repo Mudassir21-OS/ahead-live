@@ -38,7 +38,7 @@ DOCTOR_NOTICE = ("This assistant is for general questions about AHEAD and health
 
 SYSTEM_PROMPT = (
     "You are AHEAD Assistant inside a university healthcare screening prototype called AHEAD "
-    "(Advanced Health Early Awareness and Disease Detection). AHEAD screens for diabetes, cardiovascular "
+    "(Analytical Health Early Awareness and Detection). AHEAD screens for diabetes, cardiovascular "
     "disease and chronic kidney disease using machine-learning models trained on public CDC survey data (NHANES "
     "for diabetes and kidney, BRFSS for heart), and shows the result as an educational screening estimate, never a "
     "diagnosis. The diabetes and kidney models read only answers (age, sex, BMI, smoking and health history); lab "
@@ -97,7 +97,7 @@ def _trait_icon(paths: str) -> str:
 # Offline answers for the suggested prompts so the page is useful without an API key.
 LOCAL_ANSWERS = {
     "what is ahead": (
-        "**AHEAD** (Advanced Health Early Awareness and Disease Detection) is a Senior Design prototype that "
+        "**AHEAD** (Analytical Health Early Awareness and Detection) is a Senior Design prototype that "
         "screens for **diabetes**, **cardiovascular disease** and **chronic kidney disease** using machine-learning "
         "models trained on public CDC survey data.\n\nYou enter lifestyle, medical-history and clinical values; AHEAD "
         "returns an *educational* screening estimate, practical next steps and the factors it noticed — never a diagnosis."

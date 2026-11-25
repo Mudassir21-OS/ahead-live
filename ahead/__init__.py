@@ -1,1 +1,1 @@
-"""AHEAD — Advanced Health Early Awareness and Disease Detection System."""
+"""AHEAD — Analytical Health Early Awareness and Detection."""
