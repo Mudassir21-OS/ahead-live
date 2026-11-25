@@ -12,7 +12,7 @@ from datetime import datetime
 
 import streamlit as st
 
-from ahead import accounts, browser
+from ahead import accounts, browser, navigation
 from ahead.config import DISEASES, ROLE_ADMIN
 from ahead.storage import load_screenings
 
@@ -123,6 +123,7 @@ def begin(account):
     if accounts.valid_tab_id(tab.get("id")):
         st.session_state.pending_handoff = (code, tab["id"])
     load_into_state(account)
+    navigation.mark_fresh_sign_in()   # open the home page, not whatever address the sign-in form was on
 
 
 def restore(tab):
@@ -184,7 +185,10 @@ def sign_out():
     if session_id:
         accounts.end_session(session_id)
         accounts.audit("sign_out", actor_id=user.get("id"), target_user_id=user.get("id"), ip=request_ip())
+    home = (st.session_state.get(navigation.PAGES_KEY) or {}).get("overview")
     _forget()
+    if home is not None:
+        st.switch_page(home)   # back to the site's own address ("/"), where the sign-in page is
     st.rerun()
 
 

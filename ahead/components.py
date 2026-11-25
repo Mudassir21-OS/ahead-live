@@ -63,7 +63,8 @@ def go_to(nav_key: str, screening: str | None = None, keep_screening: bool = Fal
     # On a phone the menu covers the page; close it once the new page is open (app.py).
     st.session_state.close_menu = st.session_state.get("menu_seq", 0) + 1
     st.session_state.menu_seq = st.session_state.close_menu
-    st.rerun()
+    from ahead import navigation  # each page has its own address, so back/forward work (ahead/navigation.py)
+    navigation.switch(nav_key)
 
 
 def open_assistant(from_nav: str) -> None:

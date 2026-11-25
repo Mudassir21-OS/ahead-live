@@ -30,6 +30,7 @@ from ahead.browser import close_phone_menu  # noqa: E402
 from ahead.components import current_user, go_to, init_state, open_assistant  # noqa: E402
 from ahead.session import browser_scripts, mount_tab_identity, restore, sign_out  # noqa: E402
 from ahead.config import NAV_ITEMS  # noqa: E402
+from ahead import navigation  # noqa: E402
 from ahead.resources import image_data_uri  # noqa: E402
 from ahead.pages.analytics import render_analytics  # noqa: E402
 from ahead.pages.assistant import render_assistant  # noqa: E402
@@ -58,6 +59,9 @@ tab = mount_tab_identity()   # this browser tab's own identity (sessionStorage):
 ready = restore(tab)         # a reload of a signed-in tab signs back in; deactivated accounts are signed out
 browser_scripts()            # sets or clears this tab's cookie after signing in or out
 inject_global_css()
+
+if not st.session_state.authenticated:
+    navigation.register_signed_out()   # keep a page's address through the sign-in screens (ahead/navigation.py)
 
 if not ready and not st.session_state.get("skip_tab_wait"):
     apply_theme(force_light=True)
@@ -102,6 +106,7 @@ user = current_user()
 
 # A patient without a current agreement to how AHEAD uses their information sees only the consent page.
 if needs_consent(st.session_state.user["id"], not (user["is_doctor"] or user["is_admin"])):
+    navigation.register_signed_out()
     render_consent_gate(st.session_state.user["id"])
     st.stop()
 
@@ -117,9 +122,12 @@ else:
     visible_nav = [item for item in NAV_ITEMS if (not item[3] or user["is_doctor"])
                    and (not user["is_doctor"] or item[0] not in patient_only)]
 nav_keys = {item[0] for item in visible_nav}
-if st.session_state.nav not in nav_keys:
-    st.session_state.nav = "admin" if user["is_admin"] else "overview"
+# One address per page (/screenings, /medications, ...): the browser's back and forward buttons move between
+# AHEAD's pages. This also corrects st.session_state.nav if it names a page this person can't open.
+navigation.sync([item[0] for item in visible_nav], "admin" if user["is_admin"] else "overview",
+                {key: f"{label} · AHEAD" for key, label, _icon, _doctor in visible_nav})
 active = st.session_state.nav
+st.set_page_config(page_title=f"{dict((k, l) for k, l, _i, _d in visible_nav).get(active, 'AHEAD')} · AHEAD")
 
 with st.sidebar:
     st.html(
